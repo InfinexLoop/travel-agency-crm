@@ -131,4 +131,4 @@ The seed is a guarded batch that skips a previously seeded database and rejects 
 
 ### Deploy behind Cloudflare Access
 
-Use `npm run deploy:vinext` with `CRM_LOCAL_TEST` unset. The Worker checks Cloudflare's authenticated Access context before it handles requests. Configure a Worker-scoped Access application covering all traffic with an allow policy for approved demo viewers. Preview URLs are disabled. Verify anonymous requests are denied and then use an approved identity for the hosted walkthrough. Demo sign-in credentials control CRM roles inside Access.
+Use `npm run deploy:vinext` with `CRM_LOCAL_TEST` unset. The Worker verifies the Cloudflare Access token signature, issuer, audience, and expiry before it handles requests. If the Access application is replaced, update the public issuer and audience in `cloudflare/resources.ts`. Configure a Worker-scoped Access application covering all traffic with an allow policy for approved demo viewers. Preview URLs are disabled. Verify anonymous requests are denied and then use an approved identity for the hosted walkthrough. Demo sign-in credentials control CRM roles inside Access.
