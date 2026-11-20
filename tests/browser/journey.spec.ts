@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { money } from '../../domains/shared';
 import { report as summarize } from '../../domains/reporting';
 
-const base='http://127.0.0.1:3100';
+const live=process.env.CRM_E2E_LIVE_URL;
+const base=live||'http://127.0.0.1:3100';
 const origin={Origin:base};
 const staff={email:'owner@zuri.demo',password:'ZuriDemo!2026'};
 const portalHeaders={'X-CRM-Space':'portal'};
@@ -31,14 +32,19 @@ const action=(context:BrowserContext,action:string,input:unknown,portal=false)=>
 test('WhatsApp enquiry becomes a completed trip with linked payments, documents and feedback',async ({page,context})=>{
   const errors:string[]=[];
   page.on('pageerror',e=>errors.push(e.message));
+  if (live) await context.route('**/*',route=>{
+    return new URL(route.request().url()).origin===new URL(base).origin?route.continue():route.abort();
+  });
   await signIn(page);
   const before=await dataset(context);
+  const displayName=live?'Cloudflare QA '+randomUUID().slice(0,6).replace(/\d/g,n=>String.fromCharCode(97+Number(n))):'Aarav QA';
+  const contact=live?`${displayName}, cloudflare-${randomUUID()}@example.test`:'Aarav QA, +91 90000 00171, aarav-qa@example.test';
   await page.getByRole('link',{name:'Open simulator'}).click();
   await page.getByRole('button',{name:'Start conversation'}).click();
   await expect(page).toHaveURL(/\/simulation\/CV-/);
   const simUrl=page.url();
   await chat(page,['Hi, I want a Dubai package.','2 adults and 1 child','15–20 December','Chennai','Around 90,000',
-    'Aarav QA, +91 90000 00171, aarav-qa@example.test','Family-friendly hotel and airport transfers']);
+    contact,'Family-friendly hotel and airport transfers']);
   await expect(page.getByRole('link',{name:'View CRM lead',exact:true})).toBeVisible();
   await expect(page.getByText('Qualification complete',{exact:true})).toBeVisible();
   await page.reload();
@@ -46,7 +52,7 @@ test('WhatsApp enquiry becomes a completed trip with linked payments, documents 
   await chat(page,['Please send a quotation']);
   await expect(page.getByText('Human handoff',{exact:true})).toBeVisible();
   await page.getByRole('link',{name:'View CRM lead',exact:true}).click();
-  await expect(page.getByRole('heading',{name:'Aarav QA'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:displayName})).toBeVisible();
   const lead=page.url().split('/').at(-1)!;
   const salesData=await dataset(context);
   const generated=salesData.leads.find((record:{id:string})=>record.id===lead);
@@ -252,7 +258,15 @@ test('server enforces scope and prevents overpayments and excess settlements',as
   expect(adjusted.adjustments[0]).toMatchObject({booking_id:before.id,prior_total:before.total,new_total:before.total+20000});
   expect(adjusted.bookings.find((b:{id:string})=>b.id===before.id).total).toBe(before.total+20000);
   await action(context,'finance.refund',{id:pending.id,amount:1000,reason:'Synthetic refund'});
-  expect((await dataset(context)).bookings.find((b:{id:string})=>b.id===before.id).paid).toBe(0);
+  const afterRefund=(await dataset(context)).bookings.find((b:{id:string})=>b.id===before.id);
+  expect(afterRefund.paid).toBe(0);
+  const payment={id:before.id,amount:afterRefund.total,method:'UPI',status:'Paid'};
+  const race=await Promise.all([
+    attempt('finance.payment',payment),
+    attempt('finance.payment',payment),
+  ]);
+  expect(race.map(response=>response.status()).sort()).toEqual([200,400]);
+  expect((await dataset(context)).bookings.find((b:{id:string})=>b.id===before.id).paid).toBe(afterRefund.total);
   const job=(await dataset(context)).supplier_jobs.find((j:{status:string;settled:number})=>j.status==='Confirmed'&&j.settled>0);
   expect((await attempt('supplier.settle',{id:job.id,amount:job.cost-job.settled+1})).status()).toBe(400);
   await action(context,'supplier.settle',{id:job.id,amount:job.cost-job.settled});
@@ -288,4 +302,33 @@ test('dashboard, navigation and simulator fit desktop, tablet and phone widths',
   await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({path:info.outputPath('simulation-390.png'),fullPage:true,animations:'disabled'});
+});
+
+test('manager, operations and finance accounts retain their distinct authority',async ({context})=>{
+  const attempt=(action:string,input:unknown)=>context.request.post('/api/crm/action',{
+    data:{action,input},headers:{...origin,'Idempotency-Key':randomUUID()},
+  });
+
+  await ok(context,'login',{email:'manager@zuri.demo',password:staff.password});
+  let data=await dataset(context);
+  expect(data.user.role).toBe('manager');
+  expect(data.leads.length).toBeGreaterThan(0);
+  expect((await attempt('staff.save',{})).status()).toBe(403);
+  expect((await attempt('finance.payment',{})).status()).toBe(403);
+
+  await ok(context,'login',{email:'operations@zuri.demo',password:staff.password});
+  data=await dataset(context);
+  expect(data.user.role).toBe('ops');
+  expect(data.supplier_jobs.length).toBeGreaterThan(0);
+  expect(data.leads).toEqual([]);
+  expect((await attempt('lead.assign',{})).status()).toBe(403);
+  expect((await context.request.get('/api/crm/report/bookings')).status()).toBe(403);
+
+  await ok(context,'login',{email:'finance@zuri.demo',password:staff.password});
+  data=await dataset(context);
+  expect(data.user.role).toBe('finance');
+  expect(data.payments.length).toBeGreaterThan(0);
+  expect(data.conversations).toEqual([]);
+  expect((await attempt('staff.save',{})).status()).toBe(403);
+  expect((await context.request.get('/api/crm/report/bookings')).ok()).toBeTruthy();
 });

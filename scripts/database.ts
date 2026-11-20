@@ -1,8 +1,9 @@
 import { existsSync, renameSync } from 'node:fs';
-import { dataDir, day, insert, migrate, one, transaction } from '../server/db.ts';
-import { passwordHash, demo } from '../server/auth.ts';
+import { dataDir, day, insert, migrate, one, transaction } from '../server/db.local.ts';
+import { passwordHash } from '../server/password.ts';
 import { addDays, roles, sources } from '../domains/shared.ts';
 
+const demo=process.env.CRM_DEMO!=='0';
 const action=process.argv[2];
 if (action==='reset') {
   if (!demo || !process.argv.includes('--confirm')) throw Error('Stop the application. Use npm run db:reset -- --confirm to back up and recreate the local demo database.');
@@ -18,7 +19,12 @@ if (action==='migrate') process.exit(0);
 if (!demo) throw Error('Seed data is available only when CRM_DEMO is enabled.');
 
 const code=(prefix:string,n:number)=>prefix+'-'+String(n+1).padStart(4,'0');
-const d=(offset:number)=>day(offset);
+const anchor=process.env.CRM_SEED_DATE;
+if (anchor && (!/^\d{4}-\d{2}-\d{2}$/.test(anchor) || day(0,new Date(anchor+'T12:00:00Z'))!==anchor)) {
+  throw Error('CRM_SEED_DATE must be a valid date (YYYY-MM-DD)');
+}
+const seedDate=anchor?new Date(anchor+'T12:00:00Z'):new Date();
+const d=(offset:number)=>day(offset,seedDate);
 const time=(offset:number)=>d(offset)+' 07:30:00';
 const names=['Ananya Rao','Rohan Mehta','Meera Iyer','Kabir Shah','Ishita Sen','Arjun Nair','Nisha Menon','Aditya Patel','Tara Kapoor','Vihaan Verma',
   'Priya Joseph','Farah Khan','Sara Thomas','Karan Desai','Nandini Das','Sahil Jain','Maya Bose','Rhea Fernandes','Rahul Suri','Aisha Malik',
