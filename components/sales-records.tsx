@@ -222,6 +222,7 @@ export function Customers({id}:{id?:string}) {
   const router=useRouter();
   const c=data.customers.find(c=>c.id===id);
   const canEdit=['admin','manager','sales'].includes(data.user.role);
+  const canAssign=['admin','manager'].includes(data.user.role);
   const canTraveller=['admin','manager','ops'].includes(data.user.role);
   const fields=[...Object.values(inputFields),memo('preferences','Travel preferences'),memo('notes','Staff notes')];
   const b=data.bookings.filter(b=>b.customer_id===id);
@@ -235,9 +236,15 @@ export function Customers({id}:{id?:string}) {
   return <>
     <PageHeading title={c.name} description={c.id+' · Customer profile'}>
       {canEdit&&<EditButton label="Edit customer" action="customer.save" initial={c} input={{id}} fields={fields}/>}
+      {canAssign&&<EditButton label="Assign customer access" action="customer.assign" initial={c} input={{id}} fields={[
+        field('sales_owner','Salesperson with customer access','select',{
+          optional:true,options:selectRows(data.team.filter(u=>u.active&&u.role==='sales'),'name'),
+        }),
+      ]}/>}
       {canEdit&&data.demo&&<PortalLink customer={c.id}/>}
     </PageHeading>
     <div className="detail-grid"><Panel title="Contact and preferences"><div className="panel-body"><Details items={[
+      ...(canAssign?[['Salesperson with customer access',labelFor(data.team,c.sales_owner)]] as [string,string][]:[]),
       ['Email',c.email],['Phone',c.phone],['WhatsApp',c.whatsapp],['Instagram',c.instagram],['Preferences',c.preferences],['Staff notes',c.notes],
       ['Lifetime net spend',money(b.reduce((sum,x)=>sum+x.paid,0))],['Booking balance',money(b.reduce((sum,x)=>sum+balance(x.total,x.paid,x.status),0))]]}/></div></Panel>
       <Panel title="Traveller profiles" action={canTraveller&&<EditButton label="Add traveller" action="traveller.save" input={{customer_id:id}} fields={travellerFields}/>}>

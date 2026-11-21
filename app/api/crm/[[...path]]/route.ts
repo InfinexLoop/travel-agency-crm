@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { allow, authenticate, check, demo, digest, DomainError, getUser, session } from '../../../../server/auth.ts';
-import { day, insert, now, one, run, transaction } from '../../../../server/db.ts';
+import { day, insert, now, one, run, transaction, ConcurrentWrite } from '../../../../server/db.ts';
 import { crmActions } from '../../../../server/crm.ts';
 import { commercialActions } from '../../../../server/commercial.ts';
 import { runDue, simulationActions } from '../../../../server/simulation.ts';
-import { operationsActions, upload } from '../../../../server/operations.ts';
+import { authorizePortalLink, operationsActions, upload } from '../../../../server/operations.ts';
 import { dataset } from '../../../../server/queries.ts';
 import { file } from '../../../../server/files.ts';
 import { report } from '../../../../domains/reporting.ts';
@@ -19,12 +19,13 @@ const json=(value:unknown,status=200)=>NextResponse.json(value,{status,headers})
 const cookieOpts={httpOnly:true,sameSite:'lax' as const,path:'/',maxAge:12*3600};
 const sessionName=(r:NextRequest)=>r.headers.get('x-crm-space')==='portal'||r.nextUrl.searchParams.get('space')==='portal'?'zuri_portal':'zuri_staff';
 const rawSession=(r:NextRequest)=>r.cookies.get(sessionName(r))?.value;
-function requireUser(r:NextRequest) {
-  const user=getUser(rawSession(r));
+async function requireUser(r:NextRequest) {
+  const user=await getUser(rawSession(r));
   check(user,'Sign in to continue',401);
   return user;
 }
 function bad(error:unknown) {
+  if (error instanceof ConcurrentWrite) return json({error:error.message},409);
   if (error instanceof DomainError) return json({error:error.message},error.status);
   if (error instanceof z.ZodError) return json({error:error.issues.map(i=>`${i.path.join(' ')} ${i.message}`.trim()).join('. ')},400);
   if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) return json({error:'That record or contact is already in use.'},409);
@@ -43,8 +44,8 @@ function csv(value:unknown) {
 export async function GET(r:NextRequest,ctx:Context) {
   try {
     const [path='data',kind,resource]=(await ctx.params).path||[];
-    const user=requireUser(r);
-    if (path==='data') return json({...dataset(user),today:day(),demo,autoDue:demo&&process.env.CRM_AUTO_DUE==='1'});
+    const user=await requireUser(r);
+    if (path==='data') return json({...await dataset(user),today:day(),demo,autoDue:demo&&process.env.CRM_AUTO_DUE==='1'});
     if (path==='file') {
       check(kind&&resource,'File not found',404);
       const result=await file(user,kind,resource);
@@ -53,7 +54,7 @@ export async function GET(r:NextRequest,ctx:Context) {
     }
     if (path==='report') {
       allow(user,'manager','finance');
-      const d=dataset(user);
+      const d=await dataset(user);
       const filtering=z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),source:z.enum(sources).optional(),owner:z.string().max(90).optional(),stage:z.enum(stages).optional(),bookingStatus:z.enum(bookingStatuses).optional()});
       const totals=report(d,filtering.parse(Object.fromEntries(r.nextUrl.searchParams)),day());
       let table:unknown[][];
@@ -70,7 +71,8 @@ export async function POST(r:NextRequest,ctx:Context) {
   try {
     const [path]=(await ctx.params).path||[];
     const origin=r.headers.get('origin');
-    check(origin&&new URL(origin).host===r.headers.get('host'),'Request origin is not allowed',403);
+    const host=r.headers.get('host')||r.nextUrl.host;
+    check(origin===`${r.nextUrl.protocol}//${host}`,'Request origin is not allowed',403);
     const length=Number(r.headers.get('content-length')||0);
     check(length <= (path==='upload'?5.2*1024*1024:150_000),'Request is too large',413);
     if (path==='login') {
@@ -81,53 +83,65 @@ export async function POST(r:NextRequest,ctx:Context) {
       const attempt=failedLogins.get(k);
       check((attempt?.count||0)<10,'Too many attempts. Try again in ten minutes.',429);
       let user:User;
-      try { user=authenticate(input.email,input.password); }
+      let raw:string;
+      try {
+        ({user,raw}=await transaction(async ()=>{
+          const user=await authenticate(input.email,input.password);
+          check(demo||input.password!=='ZuriDemo!2026','Seeded demo credentials are disabled',403);
+          return {user,raw:session(user)};
+        }));
+      }
       catch (e) {
-        if(failedLogins.size<5000) failedLogins.set(k,{count:(attempt?.count||0)+1,until:attempt?.until||time+600_000});
+        if(e instanceof DomainError&&e.status===401&&failedLogins.size<5000) failedLogins.set(k,{count:(attempt?.count||0)+1,until:attempt?.until||time+600_000});
         throw e;
       }
-      check(demo||input.password!=='ZuriDemo!2026','Seeded demo credentials are disabled',403);
       failedLogins.delete(k);
-      const raw=session(user);
       return setCookie(json({user}),r,user.role==='customer'?'zuri_portal':'zuri_staff',raw);
     }
     if (path==='portal-link') {
       check(demo,'Demo portal links are disabled',403);
       const {token}=z.object({token:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).parse(await r.json());
-      const user=transaction(()=>{
+      const raw=await transaction(async ()=>{
         const hashed=digest(token);
-        const account=one<User>(`SELECT u.id,u.name,u.email,u.role,u.customer_id FROM portal_links p JOIN users u ON u.id=p.user_id
+        const account=await one<User>(`SELECT u.id,u.name,u.email,u.role,u.customer_id FROM portal_links p JOIN users u ON u.id=p.user_id
           WHERE p.token=? AND p.expires>? AND u.active=1 AND u.role='customer'`,hashed,now());
         check(account,'This portal link is expired or has already been used',401);
         run('DELETE FROM portal_links WHERE token=?',hashed);
-        return account;
+        return {user:account,session:session(account)};
       });
-      return setCookie(json({user}),r,'zuri_portal',session(user));
+      return setCookie(json({user:raw.user}),r,'zuri_portal',raw.session);
     }
-    const user=requireUser(r);
     if (path==='logout') {
-      run('DELETE FROM sessions WHERE token=?',digest(rawSession(r)!));
+      await transaction(async ()=>{
+        await requireUser(r);
+        run('DELETE FROM sessions WHERE token=?',digest(rawSession(r)!));
+      });
       const response=json({ok:true});
       response.cookies.delete(sessionName(r));
       return response;
     }
-    if (path==='upload') return json(await upload(user,await r.formData()));
+    if (path==='upload') {
+      await requireUser(r);
+      return json(await upload(()=>requireUser(r),await r.formData()));
+    }
     check(path==='action'||path==='ingest','Page not found',404);
     const payload=await r.json();
     if (path==='ingest') check(demo,'The website demo adapter is disabled',403);
-    const {action,input}=path==='ingest'?{action:'lead.create',input:{...payload,source:'Website'}}:
+    const {action,input}=path==='ingest'?{action:'lead.create',input:{...z.record(z.string(),z.unknown()).parse(payload),source:'Website'}}:
       z.object({action:z.string().max(60),input:z.unknown()}).parse(payload);
     const requestKey=r.headers.get('idempotency-key');
     check(requestKey&&/^[a-zA-Z0-9_-]{8,100}$/.test(requestKey),'A valid request identifier is required');
     const fingerprint=digest(JSON.stringify(input??null));
-    return json(transaction(()=>{
-      const existing=one('SELECT * FROM requests WHERE key=? AND user_id=? AND action=?',requestKey,user.id,action);
+    return json(await transaction(async ()=>{
+      const user=await requireUser(r);
+      const existing=await one('SELECT * FROM requests WHERE key=? AND user_id=? AND action=?',requestKey,user.id,action);
       if (existing) {
         check(existing.fingerprint===fingerprint,'This request ID was already used with different data',409);
+        if (action==='portal.link') await authorizePortalLink(user,input);
         return JSON.parse(existing.result);
       }
-      const result=action==='automation.due'?runDue(user):
-        crmActions(action,input,user)??commercialActions(action,input,user)??operationsActions(action,input,user)??simulationActions(action,input,user);
+      const result=action==='automation.due'?await runDue(user):
+        await crmActions(action,input,user)??await commercialActions(action,input,user)??await operationsActions(action,input,user)??await simulationActions(action,input,user);
       check(result,'Action not found',404);
       insert('requests',{key:requestKey,user_id:user.id,action,fingerprint,result:JSON.stringify(result)});
       return result;

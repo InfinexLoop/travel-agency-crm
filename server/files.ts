@@ -1,12 +1,11 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readObject } from './platform.ts';
 import { balance, confirmed, titleDate, type User } from '../domains/shared.ts';
 import { allow, check } from './auth.ts';
 import { bookingAccess, bookingPaid, quoteAccess } from './commercial.ts';
 import { documentAccess } from './operations.ts';
 import { find } from './crm.ts';
-import { uploadsDir } from './db.ts';
+import { one } from './db.ts';
 
 const inr = (amount:number) => 'INR '+(amount/100).toLocaleString('en-IN',{minimumFractionDigits:2});
 const ascii=(text:string)=>text.replace(/[–—]/g,'-').replace(/₹/g,'INR ').replace(/[’‘]/g,"'").replace(/[“”]/g,'"').replace(/[^\x20-\x7e\n]/g,'?');
@@ -48,16 +47,18 @@ async function pdf(title:string, ref:string, content:string[]) {
 export async function file(user:User,kind:string,resource:string) {
   const downloadable=(bytes:Uint8Array,name:string,mime='application/pdf')=>({bytes,name,mime});
   if (kind==='document') {
-    const d=documentAccess(user,resource);
+    const d=await documentAccess(user,resource);
     check(d.mime,'No file has been submitted',404);
     if (!d.file_key) return downloadable(await pdf('Sample travel document',d.id,[d.kind,'Synthetic file for workflow demonstration.']),d.id+'.pdf');
     check(/^FILE-[A-F0-9]+\.(pdf|jpg|png)$/.test(d.file_key),'File not found',404);
-    return downloadable(readFileSync(resolve(uploadsDir,d.file_key)),d.name,d.mime);
+    const bytes=await readObject(d.file_key);
+    check(bytes,'File not found',404);
+    return downloadable(bytes,d.name,d.mime);
   }
   if (kind==='quote') {
-    const q=quoteAccess(user,resource);
+    const q=await quoteAccess(user,resource);
     return downloadable(await pdf('Travel quotation',q.id,[
-      find('customers',q.customer_id).name,`${q.destination} | ${titleDate(q.departure)} to ${titleDate(q.return_date)}`,
+      (await find('customers',q.customer_id)).name,`${q.destination} | ${titleDate(q.departure)} to ${titleDate(q.return_date)}`,
       `${q.adults} adults, ${q.children} children | Revision ${q.revision} | ${q.status}`,'',
       `Trip subtotal: ${inr(q.cost+q.markup)}`,`Optional charges: ${inr(q.extras)}`,`Discount: ${inr(q.discount)}`,
       `Demo tax: ${inr(q.tax)}`,`Total: ${inr(q.total)}`,`Required advance: ${inr(q.advance)}`,
@@ -65,24 +66,25 @@ export async function file(user:User,kind:string,resource:string) {
     ]),q.id+'.pdf');
   }
   if (kind==='receipt') {
-    const p=find('payments',resource);
-    const b=bookingAccess(user,p.booking_id);
+    const p=await find('payments',resource);
+    const b=await bookingAccess(user,p.booking_id);
     check(['Paid','Refunded'].includes(p.status),'Receipt is unavailable for this status',404);
     return downloadable(await pdf(p.status==='Refunded'?'Refund acknowledgement':'Payment receipt',p.id,[
-      find('customers',b.customer_id).name,`Booking ${b.id} | ${b.destination}`,titleDate(p.created),
+      (await find('customers',b.customer_id)).name,`Booking ${b.id} | ${b.destination}`,titleDate(p.created),
       `Simulated ${p.method} | ${p.status}`,inr(p.amount),p.parent?`Original payment: ${p.parent}`:'',
       'Internal demonstration record. No funds moved.',
     ]),p.id+'.pdf');
   }
-  const b=bookingAccess(user,resource);
-  const common=[find('customers',b.customer_id).name,`${b.destination} | ${titleDate(b.departure)} to ${titleDate(b.return_date)}`,`Booking ${b.id} | ${b.status}`,''];
+  const b=await bookingAccess(user,resource);
+  const common=[(await find('customers',b.customer_id)).name,`${b.destination} | ${titleDate(b.departure)} to ${titleDate(b.return_date)}`,`Booking ${b.id} | ${b.status}`,''];
   if (kind==='invoice') {
-    const inv=findInvoice(b.id);
+    const inv=await findInvoice(b.id);
+    const paid=await bookingPaid(b.id);
     return downloadable(await pdf('Demo invoice',inv.id,[
       ...common,`Issued on ${titleDate(inv.created)}`,`Trip value: ${inr(b.total)}`,
-      `Demo tax included in trip value: ${inr(find('quotes',b.quote_id).tax)}`,
-      `Recorded customer payments (net): ${inr(bookingPaid(b.id))}`,
-      `Outstanding: ${inr(balance(b.total,bookingPaid(b.id),b.status))}`,'Internal demonstration invoice.',
+      `Demo tax included in trip value: ${inr((await find('quotes',b.quote_id)).tax)}`,
+      `Recorded customer payments (net): ${inr(paid)}`,
+      `Outstanding: ${inr(balance(b.total,paid,b.status))}`,'Internal demonstration invoice.',
     ]),inv.id+'.pdf');
   }
   check(['voucher','itinerary'].includes(kind),'File not found',404);
@@ -93,9 +95,8 @@ export async function file(user:User,kind:string,resource:string) {
   ]),b.id+'-'+kind+'.pdf');
 }
 
-import { one } from './db.ts';
-function findInvoice(booking:string) {
-  const inv=one('SELECT id,created FROM invoices WHERE booking_id=?',booking);
+async function findInvoice(booking:string) {
+  const inv=await one('SELECT id,created FROM invoices WHERE booking_id=?',booking);
   check(inv,'Invoice has not been issued',404);
   return inv;
 }

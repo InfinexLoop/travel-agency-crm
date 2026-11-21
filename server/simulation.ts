@@ -2,9 +2,8 @@ import { z } from 'zod';
 import { balance, scenarios, type User } from '../domains/shared.ts';
 import { allow, check, demo } from './auth.ts';
 import { assignee, message, notify, record, task, template } from './events.ts';
-import { day, id, insert, one, rows, run, update } from './db.ts';
-import { conversationAccess, ingest, mergeLeads } from './crm.ts';
-import { bookingPaid } from './commercial.ts';
+import { day, id, insert, one, readBatch, run, update } from './db.ts';
+import { conversationAccess, ingest, mergeLeadRecords, requireCustomerScope, salesLead } from './crm.ts';
 import { enquiry, key, notes, phone, str } from './input.ts';
 
 const prompts = [
@@ -68,7 +67,7 @@ function nextStep(s:State):Step|undefined {
     city:!s.city,budget:!s.budget,contact:!s.name||!(s.phone||s.email),preferences:s.preferences===undefined};
   return prompts.find(([step])=>missing[step])?.[0];
 }
-export function simulationActions(action:string,input:unknown,user:User) {
+export async function simulationActions(action:string,input:unknown,user:User) {
   if (!action.startsWith('sim.')) return;
   allow(user,'manager','sales');
   check(demo,'Simulations are disabled',403);
@@ -77,26 +76,26 @@ export function simulationActions(action:string,input:unknown,user:User) {
     const conversation=id('CV');
     if (data.channel==='Instagram') check(/^@?[a-z0-9_.]{1,30}$/i.test(data.identity),'Enter a valid Instagram handle');
     insert('conversations',{id:conversation,channel:data.channel,identity:data.identity,owner:user.id,state:JSON.stringify({scenario:data.scenario})});
-    record('Conversation started',`Simulated ${data.channel} session opened`,{conversation_id:conversation},user);
+    await record('Conversation started',`Simulated ${data.channel} session opened`,{conversation_id:conversation},user);
     return {id:conversation};
   }
   if (action==='sim.message') {
     const data=z.object({id:key,body:notes.refine(Boolean,'Type a message').refine(s=>s.length<=600,'Use 600 characters or less')}).parse(input);
-    const c=conversationAccess(user,data.id);
+    const c=await conversationAccess(user,data.id);
     check(['WhatsApp','Instagram'].includes(c.channel),'Select a messaging simulation');
     check(c.status!=='Closed','This conversation has been closed');
     const state:State=JSON.parse(c.state);
     message(c.id,'Inbound',data.body,user);
-    record('Message received',`Simulated ${c.channel} message stored`,{lead_id:c.lead_id,conversation_id:c.id},user);
+    await record('Message received',`Simulated ${c.channel} message stored`,{lead_id:c.lead_id,conversation_id:c.id},user);
     if (c.status!=='Automation') {
-      const event=record('Awaiting staff reply','The incoming message was routed to the assigned salesperson',{lead_id:c.lead_id,conversation_id:c.id},user);
+      const event=await record('Awaiting staff reply','The incoming message was routed to the assigned salesperson',{lead_id:c.lead_id,conversation_id:c.id},user);
       notify(c.owner,'A conversation needs your reply',`/inbox/${c.id}`,event);
       return {id:c.id};
     }
     if (/\b(human|agent|salesperson|quotation|quote)\b/i.test(data.body) && (state.qualified||/human|agent|salesperson/i.test(data.body))) {
       update('conversations',c.id,{status:'Human'});
-      message(c.id,'Outbound',template('handoff')||'A travel specialist will take over here.',undefined,true);
-      const event=record('Human handoff','Conversation handed to a salesperson',{lead_id:c.lead_id,conversation_id:c.id},user);
+      message(c.id,'Outbound',await template('handoff')||'A travel specialist will take over here.',undefined,true);
+      const event=await record('Human handoff','Conversation handed to a salesperson',{lead_id:c.lead_id,conversation_id:c.id},user);
       notify(c.owner,'Conversation handed to sales',`/inbox/${c.id}`,event);
       return {id:c.id};
     }
@@ -107,10 +106,10 @@ export function simulationActions(action:string,input:unknown,user:User) {
     const previous={...state};
     extract(data.body,state);
     for (const [property,label] of [['destination','Destination identified'],['adults','Traveller details collected'],['dates','Travel dates collected'],['phone','Contact phone collected'],['email','Contact email collected']] as const) {
-      if (state[property]!==previous[property]) record(label,String(state[property]),{lead_id:c.lead_id,conversation_id:c.id},user);
+      if (state[property]!==previous[property]) await record(label,String(state[property]),{lead_id:c.lead_id,conversation_id:c.id},user);
     }
     if (c.channel==='Instagram'&&!c.lead_id) {
-      const initial=ingest(enquiry.parse({source:c.channel,instagram:c.identity,name:c.identity,destination:state.destination}),user,c.id);
+      const initial=await ingest(enquiry.parse({source:c.channel,instagram:c.identity,name:c.identity,destination:state.destination}),user,c.id);
       c.lead_id=initial.lead;
       c.customer_id=initial.customer;
     }
@@ -122,29 +121,34 @@ export function simulationActions(action:string,input:unknown,user:User) {
       else if (state.step==='travellers'&&previous.step!=='travellers'&&state.destination) reply=`${state.destination} sounds great. ${reply}`;
       message(c.id,'Outbound',reply,undefined,true);
     } else {
-      const best=one('SELECT id,title FROM packages WHERE lower(destination)=lower(?) AND active=1 AND valid_until>=? ORDER BY ABS(base+markup-?) LIMIT 1',state.destination!,day(),state.budget!);
+      const best=await one('SELECT id,title FROM packages WHERE lower(destination)=lower(?) AND active=1 AND valid_until>=? ORDER BY ABS(base+markup-?) LIMIT 1',state.destination!,day(),state.budget!);
       const contact=enquiry.parse({...state,source:c.channel,instagram:'',whatsapp:c.channel==='WhatsApp'?state.phone:undefined,
         flexible:/flexible/i.test(state.dates!),package_id:best?.id});
-      let priorLead:string|undefined;
+      let transfer:{customer:string;lead:string}|undefined;
       if (c.channel==='Instagram') {
-        const old=one('SELECT * FROM customers WHERE id=?',c.customer_id);
-        const found=one('SELECT id FROM customers WHERE (phone=? OR email=?) AND id<>?',state.phone||null,state.email?.toLowerCase()||null,c.customer_id);
+        const old=await one('SELECT * FROM customers WHERE id=?',c.customer_id);
+        const found=await one('SELECT id FROM customers WHERE (phone=? OR email=?) AND id<>?',state.phone||null,state.email?.toLowerCase()||null,c.customer_id);
         if (found&&old&&!old.phone&&!old.email) {
+          await requireCustomerScope(user,old.id);
+          await requireCustomerScope(user,found.id);
           run('UPDATE customers SET instagram=NULL WHERE id=?',c.customer_id);
           run('UPDATE leads SET customer_id=? WHERE id=?',found.id,c.lead_id);
-          priorLead=c.lead_id;
+          transfer={customer:c.customer_id,lead:c.lead_id};
         }
         contact.instagram=c.identity;
       }
-      const result=ingest(contact,user,c.id,true);
+      const result=await ingest(contact,user,c.id,true,transfer);
       if (c.channel==='Instagram' && c.lead_id && c.lead_id!==result.lead) {
-        const oldLead=one('SELECT customer_id FROM leads WHERE id=?',c.lead_id);
-        if (oldLead?.customer_id===result.customer) mergeLeads(priorLead||c.lead_id,result.lead,user);
+        const oldLead=await salesLead(user,c.lead_id);
+        const oldCustomer=transfer?result.customer:oldLead.customer_id;
+        if (oldCustomer===result.customer) {
+          await mergeLeadRecords({...oldLead,customer_id:oldCustomer},
+            {id:result.lead,owner:result.owner,customer_id:result.customer},user);
+        }
       }
       run('UPDATE events SET lead_id=? WHERE conversation_id=?',result.lead,c.id);
-      const event=record('Qualification complete',best?`Suggested package: ${best.title}`:'Marked as a custom trip',{lead_id:result.lead,conversation_id:c.id},user);
-      const owner=one('SELECT owner FROM leads WHERE id=?',result.lead)?.owner;
-      notify(owner,'New qualified enquiry',`/leads/${result.lead}`,event);
+      const event=await record('Qualification complete',best?`Suggested package: ${best.title}`:'Marked as a custom trip',{lead_id:result.lead,conversation_id:c.id},user);
+      notify(result.owner,'New qualified enquiry',`/leads/${result.lead}`,event);
       state.qualified=true;
       state.package_id=best?.id;
       message(c.id,'Outbound',`Thanks, ${state.name}. Your ${state.destination} brief is ready. ${best?`${best.title} is a good starting point.`:'A specialist can prepare a custom itinerary.'} Would you like a quotation?`,undefined,true);
@@ -154,46 +158,58 @@ export function simulationActions(action:string,input:unknown,user:User) {
   }
 }
 
-export function runDue(user:User) {
+export async function runDue(user:User) {
   allow(user,'manager','ops','finance');
   let processed=0;
   const today=day();
-  for (const t of rows("SELECT * FROM tasks WHERE status<>'Done' AND due<=?",today)) {
-    if (!template('followup')) continue;
-    const event=record('Follow-up due',t.title,{lead_id:t.lead_id,booking_id:t.booking_id},user,`due:${t.id}:${t.due}`);
+  const [workflows,events,checklist,followups,departures,documents,payments,expired]=await readBatch([
+    {sql:"SELECT id,template FROM workflows WHERE enabled=1",params:[]},
+    {sql:"SELECT event_key FROM events WHERE event_key IS NOT NULL",params:[]},
+    {sql:"SELECT trigger_key FROM tasks WHERE trigger_key LIKE 'departure:%'",params:[]},
+    {sql:"SELECT * FROM tasks WHERE status<>'Done' AND due<=?",params:[today]},
+    {sql:"SELECT * FROM bookings WHERE status IN ('Confirmed','Documents Ready') AND departure BETWEEN ? AND ?",params:[today,day(7)]},
+    {sql:"SELECT * FROM documents WHERE status='Missing' AND booking_id IS NOT NULL AND due<=?",params:[day(7)]},
+    {sql:`SELECT b.*,q.lead_id,
+      (SELECT id FROM conversations WHERE lead_id=q.lead_id ORDER BY created DESC LIMIT 1) conversation_id,
+      COALESCE((SELECT SUM(CASE status WHEN 'Paid' THEN amount WHEN 'Refunded' THEN -amount ELSE 0 END)
+        FROM payments WHERE booking_id=b.id),0) paid
+      FROM bookings b JOIN quotes q ON q.id=b.quote_id
+      WHERE b.balance_due<=? AND b.status NOT IN ('Cancelled','Completed')`,params:[today]},
+    {sql:"SELECT id,lead_id FROM quotes WHERE status IN ('Sent','Viewed') AND expiry<?",params:[today]},
+  ]);
+  const templates=new Map(workflows.map(row=>[row.id,String(row.template)]));
+  const eventKeys=new Set<string>(events.map(row=>row.event_key));
+  const taskKeys=new Set<string>(checklist.map(row=>row.trigger_key));
+  const owner=await assignee('ops');
+  if (templates.has('followup')) for (const t of followups) {
+    const event=await record('Follow-up due',t.title,{lead_id:t.lead_id,booking_id:t.booking_id},user,`due:${t.id}:${t.due}`,'Success',eventKeys);
     notify(t.owner,t.title,t.lead_id?`/leads/${t.lead_id}`:`/bookings/${t.booking_id}`,event);
     processed+=Number(Boolean(event));
   }
-  for (const b of rows("SELECT * FROM bookings WHERE status IN ('Confirmed','Documents Ready') AND departure BETWEEN ? AND ?",today,day(7))) {
-    if (!template('departure')) continue;
-    const owner=assignee('ops');
-    const event=record('Departure approaching',`${b.destination} departs ${b.departure}`,{booking_id:b.id},user,`departure:${b.id}:${b.departure}`);
+  if (templates.has('departure')) for (const b of departures) {
+    const key=`departure:${b.id}:${b.departure}`;
+    const event=await record('Departure approaching',`${b.destination} departs ${b.departure}`,{booking_id:b.id},user,key,'Success',eventKeys);
     notify(owner,'Review upcoming departure',`/bookings/${b.id}`,event);
-    task({title:'Review departure readiness',owner,links:{booking_id:b.id},due:b.departure,key:`departure:${b.id}:${b.departure}`});
+    await task({title:'Review departure readiness',owner,links:{booking_id:b.id},due:b.departure,key,existingKeys:taskKeys});
     processed+=Number(Boolean(event));
   }
-  for (const d of rows("SELECT * FROM documents WHERE status='Missing' AND booking_id IS NOT NULL AND due<=?",day(7))) {
-    if (!template('documents')) continue;
-    const event=record('Document missing',`${d.kind} is due ${d.due}`,{booking_id:d.booking_id},user,`document:${d.id}`);
-    notify(assignee('ops'),`Missing ${d.kind}`,`/documents/${d.id}`,event);
+  if (templates.has('documents')) for (const d of documents) {
+    const event=await record('Document missing',`${d.kind} is due ${d.due}`,{booking_id:d.booking_id},user,`document:${d.id}`,'Success',eventKeys);
+    notify(owner,`Missing ${d.kind}`,`/documents/${d.id}`,event);
     processed+=Number(Boolean(event));
   }
-  const reminder=template('payment');
-  if (reminder) {
-    for (const b of rows(`SELECT b.*,q.lead_id FROM bookings b JOIN quotes q ON q.id=b.quote_id
-      WHERE b.balance_due<=? AND b.status NOT IN ('Cancelled','Completed')`,today)) {
-      if (!balance(b.total,bookingPaid(b.id),b.status)) continue;
-      const event=record('Payment milestone due','Outstanding balance reminder recorded as a simulation',
-        {booking_id:b.id,lead_id:b.lead_id},user,`balance-due:${b.id}:${b.balance_due}`);
-      if (!event) continue;
-      const cv=one('SELECT id FROM conversations WHERE lead_id=? ORDER BY created DESC LIMIT 1',b.lead_id);
-      if (cv) message(cv.id,'Outbound',reminder,undefined,true);
-      processed++;
-    }
+  const reminder=templates.get('payment');
+  if (reminder) for (const b of payments) {
+    if (!balance(b.total,b.paid,b.status)) continue;
+    const event=await record('Payment milestone due','Outstanding balance reminder recorded as a simulation',
+      {booking_id:b.id,lead_id:b.lead_id},user,`balance-due:${b.id}:${b.balance_due}`,'Success',eventKeys);
+    if (!event) continue;
+    if (b.conversation_id) message(b.conversation_id,'Outbound',reminder,undefined,true);
+    processed++;
   }
-  for (const q of rows("SELECT id,lead_id FROM quotes WHERE status IN ('Sent','Viewed') AND expiry<?",today)) {
+  for (const q of expired) {
     update('quotes',q.id,{status:'Expired'});
-    record('Quotation expired',`${q.id} passed its validity date`,{lead_id:q.lead_id},user);
+    await record('Quotation expired',`${q.id} passed its validity date`,{lead_id:q.lead_id},user);
     processed++;
   }
   return {processed};

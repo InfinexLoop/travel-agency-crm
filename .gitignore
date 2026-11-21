@@ -42,3 +42,7 @@ blob-report/
 # macOS system files
 .DS_Store
 ._*
+.vinext/
+.cloudflare/
+.dev.vars*
+.wrangler/

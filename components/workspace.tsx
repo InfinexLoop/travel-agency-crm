@@ -37,9 +37,9 @@ const portalMenu=[
 ];
 const emailSuffix='@zuri.demo';
 const demoPassword='ZuriDemo!2026';
-async function api(path:string,portal:boolean,init?:RequestInit) {
+async function api<T=Row>(path:string,portal:boolean,init?:RequestInit) {
   const response=await fetch('/api/crm/'+path,{cache:'no-store',...init,headers:{'X-CRM-Space':portal?'portal':'staff',...init?.headers}});
-  const body=await response.json();
+  const body=await response.json() as T & {error?:string};
   if (!response.ok) throw Object.assign(new Error(body.error||'Unable to complete the request'),{status:response.status});
   return body;
 }
@@ -96,7 +96,7 @@ export function Workspace({demo}:{demo:boolean}) {
   const [term,setTerm]=useState('');
   const [dark,setDark]=useState(false);
   const refresh=useCallback(async()=>{
-    try {setData(await api('data',portal));setFatal('');}
+    try {setData(await api<Data>('data',portal));setFatal('');}
     catch(e) {setData(null); if ((e as Row).status!==401) setFatal((e as Error).message);}
     finally {setLoading(false);}
   },[portal]);

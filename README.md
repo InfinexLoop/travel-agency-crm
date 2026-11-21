@@ -78,6 +78,8 @@ npm run test:e2e
 
 Playwright starts its own local server on port 3100 with a separate temporary database. To use an existing Chrome installation on macOS, set `PLAYWRIGHT_EXECUTABLE='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'` when running the test command.
 
+Managers and admins grant sales access from the customer profile using **Assign customer access**. Sales staff receive access to customers they create. Sales staff need both customer access and ownership to work on an enquiry. Managers can transfer enquiry ownership separately. Changing or removing an existing customer assignment revokes that customer’s portal sessions and pending portal links. When upgrading an existing database, managers review and explicitly assign existing customers. Migration 006 clears existing customer portal sessions and pending portal links so customers sign in again.
+
 ## Financial definitions
 
 - Booking value covers non-cancelled bookings. Confirmed booking revenue includes Confirmed, Documents Ready, Travel In Progress and Completed.
@@ -93,3 +95,44 @@ Next.js App Router and React, Node’s native SQLite API, Zod, Recharts, pdf-lib
 The public Zuri Holidays site, WhatsApp, Instagram, email, call, payment, supplier and visa systems are outside this local demo. Payment and ticketing artifacts are synthetic. The stored finance records and PDFs are for demonstration purposes. Staff can manually run due workflows. Set `CRM_AUTO_DUE=1` to process them every minute while an authorized staff tab is visible. The app uses no background scheduler or native message delivery.
 
 Dubai Marina photo by AJ Ahamad, [Pexels](https://www.pexels.com/photo/stunning-twilight-view-of-dubai-marina-skyline-30068864/).
+
+## Cloudflare Workers demo
+
+The local Next.js and SQLite commands above still work. After switching to the deployment branch, run `npm run db:setup` once to apply the additive migration to any existing local database.
+
+The Cloudflare configuration uses vinext with no application cache or image optimizer. `DB` binds the demo's D1 database and `FILES` binds its private R2 bucket. The Worker uses the same business rules as the local server. It validates a revision before committing an atomic D1 batch and retries when another application write wins the race. R2 documents are served through the CRM's authorized download route.
+
+### Test the Cloudflare build locally
+
+```sh
+npm ci
+npx vinext check
+npm run typecheck
+npm run test
+npm run build
+npm run build:vinext
+npx playwright install chromium
+npm run test:e2e
+npm run test:e2e:worker
+```
+
+The two journey commands explicitly select disposable SQLite or isolated workerd with local D1 and R2. Both start a fresh loopback server and reject hosted URLs, credentials, and an existing listener. The Worker suite enables the loopback-only test setting for its build. A regular build and deployment use the Cloudflare Access gate.
+
+Run `npm run test:smoke:hosted` for GET-only checks against the fixed demo Worker. The default checks anonymous Access protection. With an approved service identity already available, provide `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` through the environment to check the protected pages. Optionally supply an existing `CRM_SMOKE_STAFF_SESSION` to check read-only CRM data. These credentials are used in memory for allowlisted GET requests without following redirects. For interactive acceptance, sign in as an approved viewer.
+
+### Initialize the hosted data
+
+Use an authorized Cloudflare account with the app's named resources. The D1 UUID is recorded in `cloudflare/resources.ts`. Run migrations explicitly before deploying. These commands apply only unapplied migrations and generate seed SQL from a fresh temporary database with **synthetic records only**.
+
+```sh
+npx cf d1 migrations apply a3f9036d-3506-4dde-bd60-3a5bf6036a18 --dir db
+mkdir -p .cloudflare
+npm run db:seed:cloudflare -- .cloudflare/synthetic-seed.json
+npx cf d1 query a3f9036d-3506-4dde-bd60-3a5bf6036a18 --batch @.cloudflare/synthetic-seed.json
+```
+
+The seed is a guarded batch that skips a previously seeded database and rejects an unseeded database containing customer or user records. Set `CRM_SEED_DATE=YYYY-MM-DD` to reproduce the calendar dates of the seed. The Worker never seeds or resets itself. The reset command is for local SQLite only.
+
+### Deploy behind Cloudflare Access
+
+Use `npm run deploy:vinext` with `CRM_LOCAL_TEST` unset. The Worker verifies the Cloudflare Access token signature, issuer, audience, and expiry before it handles requests. If the Access application is replaced, update the public issuer and audience in `cloudflare/resources.ts`. Configure a Worker-scoped Access application covering all traffic with an allow policy for approved demo viewers. Preview URLs are disabled. Verify anonymous requests are denied and then use an approved identity for the hosted walkthrough. Demo sign-in credentials control CRM roles inside Access.

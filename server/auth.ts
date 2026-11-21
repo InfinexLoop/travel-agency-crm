@@ -1,5 +1,7 @@
-import { randomBytes, createHash, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { one, run, insert, now } from './db.ts';
+import { passwordHash } from './password.ts';
+export { passwordHash } from './password.ts';
 import type { Role, User } from '../domains/shared.ts';
 
 export class DomainError extends Error {
@@ -12,12 +14,9 @@ export function check(condition: unknown, message: string, status=400): asserts 
 export const demo = process.env.CRM_DEMO !== '0';
 export const token = () => randomBytes(32).toString('base64url');
 export const digest = (raw:string) => createHash('sha256').update(raw).digest('hex');
-export function passwordHash(password:string, salt=randomBytes(16).toString('hex')) {
-  return salt + ':' + scryptSync(password,salt,64).toString('hex');
-}
 const profile = 'u.id,u.name,u.email,u.role,u.customer_id';
-export function authenticate(email:string, password:string) {
-  const account = one<User & {hash:string}>(`SELECT ${profile},u.hash FROM users u WHERE u.email=? AND u.active=1`,email.toLowerCase());
+export async function authenticate(email:string, password:string) {
+  const account = await one<User & {hash:string}>(`SELECT ${profile},u.hash FROM users u WHERE u.email=? AND u.active=1`,email.toLowerCase());
   const actual = account?.hash || '0'.repeat(32)+':'+ '0'.repeat(128);
   check(timingSafeEqual(Buffer.from(actual),Buffer.from(passwordHash(password,actual.split(':')[0]))) && account,'Invalid email or password',401);
   const {hash: _hash, ...user} = account;
@@ -29,9 +28,9 @@ export function session(user:User) {
   insert('sessions',{token:digest(raw),user_id:user.id,expires:new Date(Date.now()+12*3600000).toISOString().slice(0,19).replace('T',' ')});
   return raw;
 }
-export function getUser(raw?:string) {
+export async function getUser(raw?:string) {
   if (!raw || raw.length!==43) return;
-  return one<User>(`SELECT ${profile} FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=? AND s.expires>? AND u.active=1`,digest(raw),now());
+  return await one<User>(`SELECT ${profile} FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=? AND s.expires>? AND u.active=1`,digest(raw),now());
 }
 export function allow(user:User,...allowed:Role[]) {
   check(user.role==='admin'||allowed.includes(user.role),'You do not have permission for this action',403);
