@@ -9,7 +9,7 @@ if (!target) throw new Error('Usage: npm run db:seed:cloudflare -- <output.json>
 
 const guard="NOT EXISTS (SELECT 1 FROM settings WHERE key='seed_version')";
 const tables=[
-  'roles','customers','users','workflows','suppliers','packages','package_days',
+  'roles','customers','users','customer_sales_assignments','workflows','suppliers','packages','package_days',
   'package_suppliers','leads','conversations','messages','events','submissions',
   'quotes','quote_revisions','bookings','tasks','travellers','booking_travellers','supplier_jobs',
   'settlements','payments','invoices','documents','visas','feedback','notifications','settings',

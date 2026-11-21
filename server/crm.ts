@@ -3,33 +3,41 @@ import { stages, type User } from '../domains/shared.ts';
 import { check, allow } from './auth.ts';
 import { day, id, insert, now, one, run, update, rows, type Row } from './db.ts';
 import { assignee, message, notify, record, task, template } from './events.ts';
-import { enquiry, phone, type Enquiry, key, notes, str, contacts } from './input.ts';
+import { enquiry, phone, type Enquiry, key, notes, str, contacts, optionalKey } from './input.ts';
 
 export async function find(table:string, id:string) {
   const value=await one(`SELECT * FROM ${table} WHERE id=?`,id);
   check(value,'Record not found',404);
   return value;
 }
+export async function requireCustomerScope(user:User,customer:string,message='Customer not found') {
+  if (user.role==='sales') {
+    check(await one('SELECT 1 FROM customer_sales_assignments WHERE customer_id=? AND salesperson_id=?',customer,user.id),message,404);
+  }
+}
 export async function salesLead(user:User, id:string) {
   allow(user,'manager','sales');
   const lead=await find('leads',id);
   check(!lead.merged_into && (user.role!=='sales'||lead.owner===user.id),'Lead not found',404);
+  await requireCustomerScope(user,lead.customer_id,'Lead not found');
   return lead;
 }
 export async function conversationAccess(user:User,id:string) {
   allow(user,'manager','sales','customer');
   const conversation=await find('conversations',id);
-  const permitted = user.role==='customer' ? conversation.customer_id===user.customer_id
-    : user.role!=='sales' || conversation.owner===user.id ||
-      (conversation.lead_id && await one('SELECT id FROM leads WHERE id=? AND owner=?',conversation.lead_id,user.id));
-  check(permitted,'Conversation not found',404);
+  if (user.role==='customer') check(conversation.customer_id===user.customer_id,'Conversation not found',404);
+  if (user.role==='sales') {
+    if (conversation.customer_id) await requireCustomerScope(user,conversation.customer_id,'Conversation not found');
+    if (conversation.lead_id) await salesLead(user,conversation.lead_id);
+    else check(conversation.owner===user.id,'Conversation not found',404);
+  }
   return conversation;
 }
 export async function salesperson(key:string) {
   check(await one("SELECT id FROM users WHERE id=? AND active=1 AND role IN ('sales','manager','admin')",key),'Select an active sales user');
   return key;
 }
-async function identity(input:z.output<typeof contacts>, ignoredCustomer?:string) {
+async function identity(input:z.output<typeof contacts>,user:User,ignoredCustomer?:string) {
   const number=phone(input.phone);
   const email=input.email.toLowerCase();
   const handle=input.instagram.toLowerCase().replace(/^@/,'');
@@ -38,6 +46,7 @@ async function identity(input:z.output<typeof contacts>, ignoredCustomer?:string
   check(!input.whatsapp||wa,'Enter a valid WhatsApp number');
   const matches=await rows(`SELECT * FROM customers WHERE id IS NOT ? AND ((?<>'' AND phone=?) OR (?<>'' AND email=?) OR (?<>'' AND instagram=?))`,
     ignoredCustomer??null,number,number,email,email,handle,handle);
+  for (const match of matches) await requireCustomerScope(user,match.id);
   check(matches.length<2,'Phone, email or Instagram handle belong to different customers. Review their profiles first.',409);
   const existing=matches[0];
   if (existing) {
@@ -45,11 +54,12 @@ async function identity(input:z.output<typeof contacts>, ignoredCustomer?:string
     update('customers',existing.id,{name,
       phone:existing.phone||number||null,email:existing.email||email||null,
       instagram:existing.instagram||handle||null,whatsapp:existing.whatsapp||wa||null});
-    return {id:existing.id as string,name,preferences:existing.preferences,notes:existing.notes};
+    return {id:existing.id as string,name,preferences:existing.preferences,notes:existing.notes,created:false};
   }
   const customer=id('CUS');
   insert('customers',{id:customer,name:input.name,phone:number||null,email:email||null,instagram:handle||null,whatsapp:wa||null});
-  return {id:customer,name:input.name,preferences:'',notes:''};
+  if (user.role==='sales') insert('customer_sales_assignments',{customer_id:customer,salesperson_id:user.id});
+  return {id:customer,name:input.name,preferences:'',notes:'',created:true};
 }
 
 export async function assignLead(lead:string, owner:string|null, user:User) {
@@ -80,12 +90,16 @@ async function leadDetails(input:Enquiry) {
 }
 export async function ingest(input:Enquiry,user:User,existingConversation?:string,qualified=false,
   transfer?:{customer:string;lead:string}) {
-  const {id:customer,name}=await identity(input,transfer?.customer);
+  const {id:customer,name,created}=await identity(input,user,transfer?.customer);
   const candidate=await one(`SELECT * FROM leads WHERE (customer_id=? OR id=?) AND lower(destination)=lower(?)
     AND merged_into IS NULL AND stage NOT IN ('Won','Lost','Closed') ${user.role==='sales'?'AND owner=?':''}
     ORDER BY created DESC LIMIT 1`,customer,transfer?.lead??null,input.destination,...(user.role==='sales'?[user.id]:[]));
   const lead=candidate?.id ?? id('LD');
   const owner=candidate?.owner || (user.role==='sales'?user.id:input.owner?await salesperson(input.owner):await assignee('sales'));
+  if (created && user.role!=='sales' && owner) {
+    run(`INSERT INTO customer_sales_assignments (customer_id,salesperson_id)
+      SELECT ?,id FROM users WHERE id=? AND role='sales' AND active=1`,customer,owner);
+  }
   const linked=Boolean(candidate);
   const conversation=existingConversation||id('CV');
   if (!linked) {
@@ -183,18 +197,36 @@ export async function crmActions(action:string,input:unknown,user:User) {
       const data=contacts.extend({id:key.optional(),preferences:notes,notes}).parse(input);
       check(data.phone||data.email||data.instagram,'Enter a contact method');
       if (!data.id) {
-        const customer=await identity(data);
+        const customer=await identity(data,user);
         update('customers',customer.id,{preferences:data.preferences||customer.preferences,notes:data.notes||customer.notes});
         await record('Customer saved',customer.name,{},user);
         return {id:customer.id};
       }
       await find('customers',data.id);
-      check(user.role!=='sales'||await one('SELECT id FROM leads WHERE customer_id=? AND owner=? AND merged_into IS NULL',data.id,user.id),'Customer not found',404);
+      await requireCustomerScope(user,data.id);
       const number=phone(data.phone), wa=phone(data.whatsapp);
       check((!data.phone||number)&&(!data.whatsapp||wa),'Enter a valid phone number');
       update('customers',data.id,{name:data.name,phone:number||null,whatsapp:wa||null,email:data.email.toLowerCase()||null,
         instagram:data.instagram.toLowerCase().replace(/^@/,'')||null,preferences:data.preferences,notes:data.notes});
       await record('Customer edited',`Customer profile ${data.id} updated`,{},user);
+      return {id:data.id};
+    }
+    case 'customer.assign': {
+      allow(user,'manager');
+      const data=z.object({id:key,sales_owner:optionalKey}).parse(input);
+      await find('customers',data.id);
+      const current=await one('SELECT salesperson_id FROM customer_sales_assignments WHERE customer_id=?',data.id);
+      const owner=data.sales_owner||null;
+      if (owner) check(await one("SELECT id FROM users WHERE id=? AND role='sales' AND active=1",owner),'Select an active salesperson');
+      if ((current?.salesperson_id??null)===owner) return {id:data.id};
+      if (owner) run(`INSERT INTO customer_sales_assignments (customer_id,salesperson_id) VALUES (?,?)
+        ON CONFLICT(customer_id) DO UPDATE SET salesperson_id=excluded.salesperson_id`,data.id,owner);
+      else run('DELETE FROM customer_sales_assignments WHERE customer_id=?',data.id);
+      if (current) {
+        run("DELETE FROM portal_links WHERE user_id IN (SELECT id FROM users WHERE customer_id=? AND role='customer')",data.id);
+        run("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE customer_id=? AND role='customer')",data.id);
+      }
+      await record('Customer sales access changed',`Customer ${data.id}: ${current?.salesperson_id??'unassigned'} → ${owner??'unassigned'}`,{},user);
       return {id:data.id};
     }
     case 'inbox.state': {
@@ -230,7 +262,10 @@ export async function crmActions(action:string,input:unknown,user:User) {
       const {body}=z.object({body:str.refine(Boolean,'Enter your request')}).parse(input);
       const existing=await one("SELECT id,owner FROM conversations WHERE customer_id=? AND channel='Portal' AND status<>'Closed' LIMIT 1",user.customer_id);
       const conversation=existing?.id||id('CV');
-      const owner=existing?.owner||await assignee('sales');
+      const assigned=await one(`SELECT a.salesperson_id FROM customer_sales_assignments a
+        JOIN users u ON u.id=a.salesperson_id WHERE a.customer_id=? AND u.role='sales' AND u.active=1`,user.customer_id);
+      const owner=assigned?.salesperson_id??null;
+      if (existing && existing.owner!==owner) update('conversations',conversation,{owner});
       if (!existing) insert('conversations',{id:conversation,channel:'Portal',identity:user.name,customer_id:user.customer_id,owner,status:'Open'});
       message(conversation,'Inbound',body,user);
       const event=await record('Assistance requested','Customer requested help through the portal',{conversation_id:conversation},user);

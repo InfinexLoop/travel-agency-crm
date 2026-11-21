@@ -16,13 +16,14 @@
     "db:setup": "node scripts/database.ts seed",
     "db:reset": "node scripts/database.ts reset",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "CRM_E2E_TARGET=sqlite playwright test",
     "dev:vinext": "vite dev --port 3001",
     "build:vinext": "vite build",
     "start:vinext": "vite preview",
     "deploy:vinext": "vinext-cloudflare deploy",
     "db:seed:cloudflare": "node scripts/cloudflare-seed.ts",
-    "test:e2e:worker": "CRM_E2E_TARGET=workers playwright test"
+    "test:e2e:worker": "CRM_E2E_TARGET=workers playwright test",
+    "test:smoke:hosted": "playwright test --config playwright.hosted.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.2.0",

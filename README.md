@@ -78,6 +78,8 @@ npm run test:e2e
 
 Playwright starts its own local server on port 3100 with a separate temporary database. To use an existing Chrome installation on macOS, set `PLAYWRIGHT_EXECUTABLE='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'` when running the test command.
 
+Managers and admins grant sales access from the customer profile using **Assign customer access**. Sales staff receive access to customers they create. Sales staff need both customer access and ownership to work on an enquiry. Managers can transfer enquiry ownership separately. Changing or removing an existing customer assignment revokes that customer’s portal sessions and pending portal links. When upgrading an existing database, managers review and explicitly assign existing customers. Migration 006 clears existing customer portal sessions and pending portal links so customers sign in again.
+
 ## Financial definitions
 
 - Booking value covers non-cancelled bookings. Confirmed booking revenue includes Confirmed, Documents Ready, Travel In Progress and Completed.
@@ -114,7 +116,9 @@ npm run test:e2e
 npm run test:e2e:worker
 ```
 
-The Worker suite runs the built vinext Worker in workerd with disposable D1 and R2 state. It enables the loopback-only test setting for that build. A regular build and deployment use the Cloudflare Access gate.
+The two journey commands explicitly select disposable SQLite or isolated workerd with local D1 and R2. Both start a fresh loopback server and reject hosted URLs, credentials, and an existing listener. The Worker suite enables the loopback-only test setting for its build. A regular build and deployment use the Cloudflare Access gate.
+
+Run `npm run test:smoke:hosted` for GET-only checks against the fixed demo Worker. The default checks anonymous Access protection. With an approved service identity already available, provide `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` through the environment to check the protected pages. Optionally supply an existing `CRM_SMOKE_STAFF_SESSION` to check read-only CRM data. These credentials are used in memory for allowlisted GET requests without following redirects. For interactive acceptance, sign in as an approved viewer.
 
 ### Initialize the hosted data
 

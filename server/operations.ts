@@ -4,7 +4,7 @@ import { confirmed, docKinds, visaStatuses, roles, type User } from '../domains/
 import { allow, check, demo, digest, DomainError, passwordHash, sameCustomer, token } from './auth.ts';
 import { id, insert, one, rows, run, update, day, transaction, ConcurrentWrite } from './db.ts';
 import { assignee, record, task } from './events.ts';
-import { find, salesLead } from './crm.ts';
+import { find, requireCustomerScope, salesLead } from './crm.ts';
 import { bookingAccess } from './commercial.ts';
 import { date, key, notes, optionalKey, str, text } from './input.ts';
 
@@ -14,11 +14,18 @@ export async function documentAccess(user:User,id:string) {
   sameCustomer(user,d.customer_id);
   if (user.role==='finance') check(['Invoice','Payment receipt'].includes(d.kind),'Document not found',404);
   if (user.role==='sales') {
-    check(await one('SELECT id FROM leads WHERE customer_id=? AND owner=? AND merged_into IS NULL',d.customer_id,user.id),'Document not found',404);
+    await requireCustomerScope(user,d.customer_id,'Document not found');
     check(!d.booking_id&&!d.traveller_id,'Document not found',404);
     if (d.lead_id) await salesLead(user,d.lead_id);
   }
   return d;
+}
+export async function authorizePortalLink(user:User,input:unknown) {
+  allow(user,'manager','sales');
+  check(demo,'Demo portal links are disabled',403);
+  const data=z.object({id:key}).parse(input);
+  await requireCustomerScope(user,data.id);
+  return await find('customers',data.id);
 }
 export async function upload(loadUser:()=>Promise<User>,form:FormData) {
   const data=z.object({id:optionalKey,booking_id:optionalKey,lead_id:optionalKey,traveller_id:optionalKey,kind:z.enum(docKinds)}).parse(Object.fromEntries(form));
@@ -173,11 +180,7 @@ export async function operationsActions(action:string,input:unknown,user:User) {
       return {id:feedback};
     }
     case 'portal.link': {
-      allow(user,'manager','sales');
-      check(demo,'Demo portal links are disabled',403);
-      const data=z.object({id:key}).parse(input);
-      const customer=await find('customers',data.id);
-      check(user.role!=='sales'||await one('SELECT id FROM leads WHERE customer_id=? AND owner=? AND merged_into IS NULL',customer.id,user.id),'Customer not found',404);
+      const customer=await authorizePortalLink(user,input);
       let account=await one('SELECT id,active FROM users WHERE customer_id=?',customer.id);
       if (!account) {
         const uid=id('USER');

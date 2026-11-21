@@ -19,7 +19,7 @@ export function db() {
 export function migrate() {
   db().exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY) STRICT');
   transaction(() => {
-    const migrations=['001-initial.sql','002-adjustments.sql','003-payment-schedule.sql','004-payment-reminder.sql','005-write-revision.sql'];
+    const migrations=['001-initial.sql','002-adjustments.sql','003-payment-schedule.sql','004-payment-reminder.sql','005-write-revision.sql','006-customer-sales-authorization.sql'];
     for (const [index,filename] of migrations.entries()) {
       const version=index+1;
       if (one('SELECT 1 FROM schema_migrations WHERE version=?',version)) continue;

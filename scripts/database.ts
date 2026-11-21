@@ -87,6 +87,7 @@ transaction(()=>{
     ['USR-CUSTOMER3','Meera Iyer','customer3','customer',code('CUS',2)],
   ];
   for (const [id,name,email,role,customer_id] of users) insert('users',{id,name,email:email+'@zuri.demo',hash:demoHash,role,customer_id});
+  names.forEach((_,i)=>insert('customer_sales_assignments',{customer_id:code('CUS',i),salesperson_id:sales[i%2]}));
   for (const [id,label,template] of [
     ['acknowledgement','Website acknowledgement','Thanks, {name}. We received your travel brief and a specialist will be in touch.'],
     ['handoff','Human handoff','I’ve shared this conversation with a travel specialist. They can reply here.'],

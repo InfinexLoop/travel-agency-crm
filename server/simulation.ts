@@ -3,7 +3,7 @@ import { balance, scenarios, type User } from '../domains/shared.ts';
 import { allow, check, demo } from './auth.ts';
 import { assignee, message, notify, record, task, template } from './events.ts';
 import { day, id, insert, one, readBatch, run, update } from './db.ts';
-import { conversationAccess, ingest, mergeLeadRecords, salesLead } from './crm.ts';
+import { conversationAccess, ingest, mergeLeadRecords, requireCustomerScope, salesLead } from './crm.ts';
 import { enquiry, key, notes, phone, str } from './input.ts';
 
 const prompts = [
@@ -129,6 +129,8 @@ export async function simulationActions(action:string,input:unknown,user:User) {
         const old=await one('SELECT * FROM customers WHERE id=?',c.customer_id);
         const found=await one('SELECT id FROM customers WHERE (phone=? OR email=?) AND id<>?',state.phone||null,state.email?.toLowerCase()||null,c.customer_id);
         if (found&&old&&!old.phone&&!old.email) {
+          await requireCustomerScope(user,old.id);
+          await requireCustomerScope(user,found.id);
           run('UPDATE customers SET instagram=NULL WHERE id=?',c.customer_id);
           run('UPDATE leads SET customer_id=? WHERE id=?',found.id,c.lead_id);
           transfer={customer:c.customer_id,lead:c.lead_id};

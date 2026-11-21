@@ -9,24 +9,28 @@ function omit({ ...row }:Row, fields:string[]) {
 export async function dataset(user:User) {
   const customer=user.role==='customer', finance=user.role==='finance', ops=user.role==='ops', sales=user.role==='sales';
   const staffRetail=!customer&&!finance&&!ops;
-  const leadWhere=sales?" AND owner=(SELECT uid FROM ctx)":customer?" AND customer_id=(SELECT cid FROM ctx)":"";
+  const customerScope='SELECT customer_id FROM customer_sales_assignments WHERE salesperson_id=(SELECT uid FROM ctx)';
+  const leadWhere=sales?` AND owner=(SELECT uid FROM ctx) AND customer_id IN (${customerScope})`:customer?" AND customer_id=(SELECT cid FROM ctx)":"";
   const leadSet=`SELECT id FROM leads WHERE merged_into IS NULL${leadWhere}`;
   const bookingWhere=customer?' WHERE customer_id=(SELECT cid FROM ctx)':sales?` WHERE quote_id IN (SELECT id FROM quotes WHERE lead_id IN (${leadSet}))`:'';
   const bookingSet=`SELECT id FROM bookings${bookingWhere}`;
   const customerWhere=customer?' WHERE id=(SELECT cid FROM ctx)':sales
-    ?` WHERE id IN (SELECT customer_id FROM leads WHERE id IN (${leadSet}))`
+    ?` WHERE id IN (${customerScope})`
     :ops||finance?` WHERE id IN (SELECT customer_id FROM bookings WHERE id IN (${bookingSet}))`:'';
-  const conversationWhere=customer?' WHERE customer_id=(SELECT cid FROM ctx)':sales?` WHERE owner=(SELECT uid FROM ctx) OR lead_id IN (${leadSet})`:'';
+  const conversationWhere=customer?' WHERE customer_id=(SELECT cid FROM ctx)':sales?` WHERE ((lead_id IS NULL AND owner=(SELECT uid FROM ctx)) OR lead_id IN (${leadSet}))
+      AND (customer_id IS NULL OR customer_id IN (${customerScope}))`:'';
   const conversationSet=`SELECT id FROM conversations${conversationWhere}`;
   const docsWhere=customer?' WHERE customer_id=(SELECT cid FROM ctx)':sales
-    ?` WHERE booking_id IS NULL AND traveller_id IS NULL AND customer_id IN (SELECT customer_id FROM leads WHERE id IN (${leadSet})) AND (lead_id IS NULL OR lead_id IN (${leadSet}))`
+    ?` WHERE booking_id IS NULL AND traveller_id IS NULL AND customer_id IN (${customerScope}) AND (lead_id IS NULL OR lead_id IN (${leadSet}))`
     :finance?" WHERE kind IN ('Invoice','Payment receipt')":'';
   const bookingChild=` WHERE booking_id IN (${bookingSet})`;
   const taskFilter=sales?` WHERE lead_id IN (${leadSet})`:ops?' WHERE booking_id IS NOT NULL':'';
   const quoteIds=sales?` WHERE quote_id IN (SELECT id FROM quotes WHERE lead_id IN (${leadSet}))`:'';
   const select=(table:string,clause='',sort='')=>`SELECT * FROM ${table}${clause} ${sort}`;
   const sql={
-    customers:select('customers',customerWhere,'ORDER BY name'),
+    customers:['admin','manager'].includes(user.role)
+      ?'SELECT c.*,a.salesperson_id AS sales_owner FROM customers c LEFT JOIN customer_sales_assignments a ON a.customer_id=c.id ORDER BY c.name'
+      :select('customers',customerWhere,'ORDER BY name'),
     leads:(staffRetail||customer)&&select('leads',' WHERE merged_into IS NULL'+leadWhere,'ORDER BY touched DESC,rowid DESC'),
     packages:!customer&&!finance&&select('packages','','ORDER BY rowid'),
     package_days:!customer&&!finance&&select('package_days','','ORDER BY position'),

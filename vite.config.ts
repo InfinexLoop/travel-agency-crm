@@ -10,6 +10,7 @@ export default defineConfig({
   plugins: [
     vinext(),
     cloudflare({
+      ...(process.env.CRM_LOCAL_TEST==='1'?{remoteBindings:false}:{}),
       persistState:{path:process.env.CRM_WORKER_STATE || '.cloudflare/state'},
       types:{includeRuntime:false},
       viteEnvironment: {

@@ -5,7 +5,7 @@ import { day, insert, now, one, run, transaction, ConcurrentWrite } from '../../
 import { crmActions } from '../../../../server/crm.ts';
 import { commercialActions } from '../../../../server/commercial.ts';
 import { runDue, simulationActions } from '../../../../server/simulation.ts';
-import { operationsActions, upload } from '../../../../server/operations.ts';
+import { authorizePortalLink, operationsActions, upload } from '../../../../server/operations.ts';
 import { dataset } from '../../../../server/queries.ts';
 import { file } from '../../../../server/files.ts';
 import { report } from '../../../../domains/reporting.ts';
@@ -137,6 +137,7 @@ export async function POST(r:NextRequest,ctx:Context) {
       const existing=await one('SELECT * FROM requests WHERE key=? AND user_id=? AND action=?',requestKey,user.id,action);
       if (existing) {
         check(existing.fingerprint===fingerprint,'This request ID was already used with different data',409);
+        if (action==='portal.link') await authorizePortalLink(user,input);
         return JSON.parse(existing.result);
       }
       const result=action==='automation.due'?await runDue(user):

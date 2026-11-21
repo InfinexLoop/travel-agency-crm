@@ -263,10 +263,14 @@ export async function commercialActions(action:string,input:unknown,user:User) {
       check(payment.status==='Paid','Only a successful payment can be refunded');
       const refunded=(await one('SELECT COALESCE(SUM(amount),0) amount FROM payments WHERE parent=?',data.id))?.amount;
       check(data.amount<=payment.amount-refunded,'Refund exceeds the remaining payment amount');
-      const refund=id('RF');
-      insert('payments',{id:refund,booking_id:payment.booking_id,amount:data.amount,method:payment.method,status:'Refunded',parent:payment.id,actor:user.id});
       const b=await bookingAccess(user,payment.booking_id);
-      if (['Advance Recorded','Supplier Confirmation Pending'].includes(b.status)&&(await bookingPaid(b.id))-data.amount<b.advance) update('bookings',b.id,{status:'Pending Advance'});
+      const netAfterRefund=(await bookingPaid(b.id))-data.amount;
+      check(!confirmed.includes(b.status)||netAfterRefund>=b.advance,'A confirmed booking must retain its paid advance');
+      const refund=id('RF');
+      insert('payments',{id:refund,booking_id:b.id,amount:data.amount,method:payment.method,status:'Refunded',parent:payment.id,actor:user.id});
+      if (['Advance Recorded','Supplier Confirmation Pending'].includes(b.status)&&netAfterRefund<b.advance) {
+        update('bookings',b.id,{status:'Pending Advance'});
+      }
       await record('Simulated refund',data.reason,{booking_id:payment.booking_id},user);
       return {id:refund};
     }

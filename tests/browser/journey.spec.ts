@@ -1,16 +1,23 @@
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { PDFDocument } from 'pdf-lib';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { money } from '../../domains/shared';
 import { report as summarize } from '../../domains/reporting';
 
-const live=process.env.CRM_E2E_LIVE_URL;
-const base=live||'http://127.0.0.1:3100';
+import { disposableOrigin as base } from '../support/targets';
+
+const disposableConfig=fileURLToPath(new URL('../../playwright.config.ts',import.meta.url));
+test.beforeEach(({baseURL},info)=>{
+  if (baseURL!==base||info.config.configFile!==disposableConfig) {
+    throw new Error('CRM journeys require the disposable loopback server and its test configuration.');
+  }
+});
 const origin={Origin:base};
 const staff={email:'owner@zuri.demo',password:'ZuriDemo!2026'};
 const portalHeaders={'X-CRM-Space':'portal'};
 const ok=async (context:BrowserContext,path:string,data:unknown,key=randomUUID(),portal=false)=>{
-  const res=await context.request.post('/api/crm/'+path,{data,headers:{...origin,'idempotency-key':key,...(portal?portalHeaders:{})}});
+  const res=await context.request.post('/api/crm/'+path,{data,maxRedirects:0,headers:{...origin,'idempotency-key':key,...(portal?portalHeaders:{})}});
   expect(res.ok(),await res.text()).toBeTruthy();
   return res.json();
 };
@@ -32,13 +39,10 @@ const action=(context:BrowserContext,action:string,input:unknown,portal=false)=>
 test('WhatsApp enquiry becomes a completed trip with linked payments, documents and feedback',async ({page,context})=>{
   const errors:string[]=[];
   page.on('pageerror',e=>errors.push(e.message));
-  if (live) await context.route('**/*',route=>{
-    return new URL(route.request().url()).origin===new URL(base).origin?route.continue():route.abort();
-  });
   await signIn(page);
   const before=await dataset(context);
-  const displayName=live?'Cloudflare QA '+randomUUID().slice(0,6).replace(/\d/g,n=>String.fromCharCode(97+Number(n))):'Aarav QA';
-  const contact=live?`${displayName}, cloudflare-${randomUUID()}@example.test`:'Aarav QA, +91 90000 00171, aarav-qa@example.test';
+  const displayName='Aarav QA';
+  const contact='Aarav QA, +91 90000 00171, aarav-qa@example.test';
   await page.getByRole('link',{name:'Open simulator'}).click();
   await page.getByRole('button',{name:'Start conversation'}).click();
   await expect(page).toHaveURL(/\/simulation\/CV-/);
@@ -184,7 +188,7 @@ test('website, Instagram and manual phone records share the CRM and preserve req
   const replay=await ok(context,'ingest',input,key);
   expect(first).toEqual(replay);
   expect(first.linked).toBeTruthy();
-  const conflict=await context.request.post('/api/crm/ingest',{data:{...input,destination:'Goa'},headers:{...origin,'Idempotency-Key':key}});
+  const conflict=await context.request.post('/api/crm/ingest',{maxRedirects:0,data:{...input,destination:'Goa'},headers:{...origin,'Idempotency-Key':key}});
   expect(conflict.status()).toBe(409);
 
   await page.goto('/simulation?channel=Instagram');
@@ -245,7 +249,7 @@ test('website, Instagram and manual phone records share the CRM and preserve req
 
 test('server enforces scope and prevents overpayments and excess settlements',async ({context})=>{
   await ok(context,'login',staff);
-  const attempt=async (action:string,input:unknown)=>context.request.post('/api/crm/action',{data:{action,input},headers:{...origin,'Idempotency-Key':randomUUID()}});
+  const attempt=async (action:string,input:unknown)=>context.request.post('/api/crm/action',{maxRedirects:0,data:{action,input},headers:{...origin,'Idempotency-Key':randomUUID()}});
   const before=(await dataset(context)).bookings.find((r:{id:string})=>r.id==='BK-0002');
   const over=await attempt('finance.payment',{id:before.id,amount:before.total+1,method:'UPI',status:'Paid'});
   expect(over.status()).toBe(400);
@@ -271,7 +275,7 @@ test('server enforces scope and prevents overpayments and excess settlements',as
   expect((await attempt('supplier.settle',{id:job.id,amount:job.cost-job.settled+1})).status()).toBe(400);
   await action(context,'supplier.settle',{id:job.id,amount:job.cost-job.settled});
   expect((await dataset(context)).supplier_jobs.find((r:{id:string})=>r.id===job.id).settled).toBe(job.cost);
-  const foreign=await context.request.post('/api/crm/action',{data:{action:'lead.stage',input:{id:'LD-0001',stage:'Closed'}},headers:{Origin:'http://example.test','Idempotency-Key':randomUUID()}});
+  const foreign=await context.request.post('/api/crm/action',{maxRedirects:0,data:{action:'lead.stage',input:{id:'LD-0001',stage:'Closed'}},headers:{Origin:'http://example.test','Idempotency-Key':randomUUID()}});
   expect(foreign.status()).toBe(403);
   await ok(context,'login',{email:'sales@zuri.demo',password:staff.password});
   const sales=await dataset(context);
@@ -306,7 +310,7 @@ test('dashboard, navigation and simulator fit desktop, tablet and phone widths',
 
 test('manager, operations and finance accounts retain their distinct authority',async ({context})=>{
   const attempt=(action:string,input:unknown)=>context.request.post('/api/crm/action',{
-    data:{action,input},headers:{...origin,'Idempotency-Key':randomUUID()},
+    maxRedirects:0,data:{action,input},headers:{...origin,'Idempotency-Key':randomUUID()},
   });
 
   await ok(context,'login',{email:'manager@zuri.demo',password:staff.password});
@@ -331,4 +335,159 @@ test('manager, operations and finance accounts retain their distinct authority',
   expect(data.conversations).toEqual([]);
   expect((await attempt('staff.save',{})).status()).toBe(403);
   expect((await context.request.get('/api/crm/report/bookings')).ok()).toBeTruthy();
+});
+
+test('customer access is independent of contact matches and enquiry ownership',async ({context})=>{
+  const login=(email:string)=>ok(context,'login',{email,password:staff.password});
+  const deny=async (type:string,input:unknown,status=404,key=randomUUID())=>{
+    const response=await context.request.post('/api/crm/action',{
+      data:{action:type,input},maxRedirects:0,headers:{...origin,'Idempotency-Key':key},
+    });
+    expect(response.status()).toBe(status);
+    return response.json();
+  };
+
+  await login('manager@zuri.demo');
+  const initial=await dataset(context);
+  const foreign=initial.customers.find((c:{id:string})=>c.id==='CUS-0002');
+  expect(foreign.sales_owner).toBe('USR-SALES2');
+  await action(context,'lead.assign',{id:'LD-0002',owner:'USR-SALES'});
+
+  await login('sales@zuri.demo');
+  const match={name:'Synthetic identity check',email:foreign.email,whatsapp:'+919000009999',notes:'Must not be recorded'};
+  const error=await deny('customer.save',match);
+  expect(error).toEqual({error:'Customer not found'});
+  expect(await deny('customer.save',{...match,id:foreign.id})).toEqual(error);
+  expect(await deny('lead.create',{...match,destination:'Kyoto'})).toEqual(error);
+  expect(await deny('lead.create',{name:match.name,phone:foreign.phone,destination:'Kyoto'})).toEqual(error);
+  const websiteResponse=await context.request.post('/api/crm/ingest',{
+    data:match,maxRedirects:0,headers:{...origin,'Idempotency-Key':randomUUID()},
+  });
+  expect(websiteResponse.status()).toBe(404);
+  expect(await websiteResponse.json()).toEqual(error);
+  expect(await deny('portal.link',{id:foreign.id})).toEqual(error);
+  await deny('customer.assign',{id:foreign.id,sales_owner:'USR-SALES'},403);
+  await deny('lead.note',{id:'LD-0002',body:'Must not be recorded'});
+  expect((await context.request.get('/api/crm/file/quote/QT-0002')).status()).toBe(404);
+  const scoped=await dataset(context);
+  expect(scoped.customers.some((c:{id:string})=>c.id===foreign.id)).toBe(false);
+  expect(scoped.leads.some((l:{customer_id:string})=>l.customer_id===foreign.id)).toBe(false);
+
+  const instagram=await action(context,'sim.start',{channel:'Instagram',identity:'@scope.qa',scenario:1});
+  for (const body of ['Hi, Bali honeymoon package?','Two adults','Flexible next month','Bengaluru','₹120,000',`Synthetic QA, ${foreign.email}`]) {
+    await action(context,'sim.message',{id:instagram.id,body});
+  }
+  await deny('sim.message',{id:instagram.id,body:'A private pool please'});
+  const provisional=(await dataset(context)).conversations.find((c:{id:string})=>c.id===instagram.id);
+  expect(provisional.customer_id).not.toBe(foreign.id);
+
+  const profile={name:'Assigned Synthetic QA',email:'authorization-regression@example.test'};
+  const owned=await action(context,'customer.save',profile);
+  const linkRequest=randomUUID();
+  const issued=await ok(context,'action',{action:'portal.link',input:{id:owned.id}},linkRequest);
+  expect(issued.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const redeemed=await ok(context,'portal-link',{token:issued.token},randomUUID(),true);
+  expect(redeemed.user.customer_id).toBe(owned.id);
+  const unusedLink=await action(context,'portal.link',{id:owned.id});
+  const lead=await action(context,'lead.create',{...profile,destination:'Dubai'});
+  expect(lead.customer).toBe(owned.id);
+  await action(context,'customer.save',{...profile,id:owned.id,notes:'Approved owner update'});
+
+  await login('manager@zuri.demo');
+  const manager=await dataset(context);
+  expect(manager.customers.find((c:{id:string})=>c.id===foreign.id)).toEqual(foreign);
+  expect(manager.leads.filter((l:{customer_id:string})=>l.customer_id===foreign.id)).toHaveLength(
+    initial.leads.filter((l:{customer_id:string})=>l.customer_id===foreign.id).length,
+  );
+  await action(context,'portal.link',{id:foreign.id});
+  await action(context,'customer.assign',{id:owned.id,sales_owner:'USR-SALES2'});
+
+  await login('sales@zuri.demo');
+  await deny('portal.link',{id:owned.id},404,linkRequest);
+  expect((await context.request.get('/api/crm/data',{headers:portalHeaders})).status()).toBe(401);
+  const stale=await context.request.post('/api/crm/portal-link',{
+    data:{token:unusedLink.token},maxRedirects:0,headers:{...origin,...portalHeaders},
+  });
+  expect(stale.status()).toBe(401);
+  await login('sales2@zuri.demo');
+  expect((await action(context,'portal.link',{id:owned.id})).token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  await action(context,'customer.save',{...profile,id:owned.id,notes:'Reassigned owner update'});
+});
+
+test('refunds preserve the advance floor and commit only valid audit and ledger changes',async ({context})=>{
+  await ok(context,'login',staff);
+  const refundInput=(id:string,amount:number)=>({id,amount,reason:'Synthetic refund regression'});
+  const refund=(id:string,amount:number)=>action(context,'finance.refund',refundInput(id,amount));
+  const attempt=(id:string,amount:number)=>context.request.post('/api/crm/action',{
+    data:{action:'finance.refund',input:refundInput(id,amount)},maxRedirects:0,
+    headers:{...origin,'Idempotency-Key':randomUUID()},
+  });
+  const snapshot=async (id:string)=>{
+    const data=await dataset(context);
+    return {
+      booking:data.bookings.find((b:{id:string})=>b.id===id),
+      payments:data.payments.filter((p:{booking_id:string})=>p.booking_id===id),
+      events:data.events.filter((e:{booking_id:string})=>e.booking_id===id),
+    };
+  };
+  const confirmed=await snapshot('BK-0001');
+  expect(confirmed.booking.status).toBe('Confirmed');
+  expect(confirmed.booking.paid).toBe(confirmed.booking.advance);
+  const receipt=confirmed.payments.find((p:{status:string})=>p.status==='Paid');
+  for (const amount of [1,receipt.amount]) {
+    const rejected=await attempt(receipt.id,amount);
+    expect(rejected.status()).toBe(400);
+    expect(await rejected.json()).toEqual({error:'A confirmed booking must retain its paid advance'});
+    expect(await snapshot(confirmed.booking.id)).toEqual(confirmed);
+  }
+
+  const addPayment=(amount:number)=>action(context,'finance.payment',{
+    id:confirmed.booking.id,amount,method:'UPI',status:'Paid',
+  });
+  const extraPayment=await addPayment(600);
+  const partialBody={action:'finance.refund',input:refundInput(extraPayment.id,200)};
+  const key=randomUUID();
+  const partial=await ok(context,'action',partialBody,key);
+  expect(await ok(context,'action',partialBody,key)).toEqual(partial);
+  const beforeRace=await snapshot(confirmed.booking.id);
+  expect(beforeRace.booking.paid).toBe(confirmed.booking.advance+400);
+  const race=await Promise.all([attempt(receipt.id,300),attempt(receipt.id,300)]);
+  expect(race.map(r=>r.status()).sort()).toEqual([200,400]);
+  const afterRace=await snapshot(confirmed.booking.id);
+  expect(afterRace.booking.paid).toBe(confirmed.booking.advance+100);
+  expect(afterRace.payments).toHaveLength(beforeRace.payments.length+1);
+  expect(afterRace.events).toHaveLength(beforeRace.events.length+1);
+  await refund(extraPayment.id,100);
+  const aboveFloor=await addPayment(400);
+  await refund(aboveFloor.id,400);
+  expect((await snapshot(confirmed.booking.id)).booking).toMatchObject({status:'Confirmed',paid:confirmed.booking.advance});
+
+  for (const [id,status] of [['BK-0003','Documents Ready'],['BK-0011','Travel In Progress'],['BK-0006','Completed']]) {
+    const later=await snapshot(id);
+    expect(later.booking.status).toBe(status);
+    for (const p of later.payments.filter((p:{status:string;amount:number})=>p.status==='Paid')) {
+      const available=(await snapshot(id)).booking.paid-later.booking.advance;
+      if (available>0) await refund(p.id,Math.min(p.amount,available));
+    }
+    const atFloor=await snapshot(id);
+    expect(atFloor.booking).toMatchObject({status,paid:later.booking.advance});
+    const paid=atFloor.payments.find((p:{status:string;id:string;amount:number})=>p.status==='Paid'&&
+      p.amount>atFloor.payments.filter((r:{parent:string})=>r.parent===p.id).reduce((sum:number,r:{amount:number})=>sum+r.amount,0));
+    expect((await attempt(paid.id,1)).status()).toBe(400);
+    expect(await snapshot(id)).toEqual(atFloor);
+  }
+
+  const advance=await snapshot('BK-0004');
+  expect(advance.booking.status).toBe('Advance Recorded');
+  await refund(advance.payments.find((p:{status:string})=>p.status==='Paid').id,advance.booking.paid);
+  expect((await snapshot(advance.booking.id)).booking).toMatchObject({status:'Pending Advance',paid:0});
+  const pending=await snapshot('BK-0005');
+  expect(pending.booking.status).toBe('Supplier Confirmation Pending');
+  await refund(pending.payments.find((p:{status:string})=>p.status==='Paid').id,1);
+  expect((await snapshot(pending.booking.id)).booking).toMatchObject({status:'Pending Advance',paid:pending.booking.paid-1});
+
+  const cancellation=await snapshot('BK-0009');
+  await action(context,'booking.status',{id:cancellation.booking.id,status:'Cancelled',reason:'Synthetic authorized cancellation'});
+  await refund(cancellation.payments.find((p:{status:string})=>p.status==='Paid').id,cancellation.booking.paid);
+  expect((await snapshot(cancellation.booking.id)).booking).toMatchObject({status:'Cancelled',paid:0});
 });
