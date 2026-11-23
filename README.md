@@ -27,7 +27,7 @@ To reset the presentation, stop the server and run `npm run db:reset -- --confir
 
 ## Demo accounts
 
-The disposable local demo has one-click choices for the accounts below. The common local-demo password is `ZuriDemo!2026`. The hosted Worker requires separately provisioned CRM credentials.
+The local and public demos can sign in with one click using the approved personas. The Owner / Admin button opens a separate demo owner preview. Staff and workflow administration require a private administrator sign-in. The common password below is for disposable local password tests. Hosted password sign-in uses separately provisioned credentials.
 
 | Role | Email |
 | --- | --- |
@@ -118,7 +118,7 @@ npm run test:e2e:worker
 
 The two journey commands explicitly select disposable SQLite or isolated workerd with local D1 and R2. Both start a fresh loopback server and reject hosted URLs, credentials, and an existing listener. The Worker suite enables the local test binding for its disposable build.
 
-Run `npm run test:smoke:hosted` for GET-only checks against the fixed demo Worker. It checks the public CRM login screens and verifies that CRM data, exports and documents require an application session. Optionally supply an existing `CRM_SMOKE_STAFF_SESSION` through the environment to check CRM data with an authorized session. The session is sent only in a read-only request to the fixed data endpoint with redirects disabled.
+Run `npm run test:smoke:hosted` against the fixed demo Worker. It checks the public login screens, all nine sign-ins and sign-outs on desktop and mobile, and authentication on CRM data, exports and documents. It performs no CRM record mutations. Optionally supply an existing `CRM_SMOKE_STAFF_SESSION` to check an authorized staff session with a read-only data request and redirects disabled.
 
 ### Initialize the hosted data
 
@@ -135,4 +135,4 @@ The seed is a guarded batch that skips a previously seeded database and rejects 
 
 ### Deploy the public demo
 
-Use `npm run deploy:vinext` with `CRM_LOCAL_TEST` unset. Keep preview URLs disabled and the R2 bucket private. The public Worker serves the CRM sign-in screens directly. CRM sessions and roles control access to data and actions. If Cloudflare Access is configured, verify the deployed authentication and rotated accounts before disabling the rule for this Worker. Run the hosted smoke checks and use an approved CRM account for the walkthrough.
+Use `CRM_PUBLIC_DEMO=1 npm run deploy:vinext` with `CRM_LOCAL_TEST` unset to enable quick login on the dedicated, synthetic-only D1 database. Keep real contacts, travel data and files out of this shared demo. Keep preview URLs disabled and the R2 bucket private. The Worker serves the CRM sign-in screens directly. CRM sessions and roles govern access to records and private downloads. Uploads to the shared R2 bucket require a password sign-in or a portal link issued by password-authenticated staff. Apply pending migrations first and explicitly assign selected synthetic customers to each sales persona on existing databases.

@@ -1,5 +1,5 @@
 import { readBatch, type Row } from './db.ts';
-import type { User } from '../domains/shared.ts';
+import { canManageStaff, type User } from '../domains/shared.ts';
 
 function omit({ ...row }:Row, fields:string[]) {
   for (const field of fields) delete row[field];
@@ -12,7 +12,8 @@ export async function dataset(user:User) {
   const customerScope='SELECT customer_id FROM customer_sales_assignments WHERE salesperson_id=(SELECT uid FROM ctx)';
   const leadWhere=sales?` AND owner=(SELECT uid FROM ctx) AND customer_id IN (${customerScope})`:customer?" AND customer_id=(SELECT cid FROM ctx)":"";
   const leadSet=`SELECT id FROM leads WHERE merged_into IS NULL${leadWhere}`;
-  const bookingWhere=customer?' WHERE customer_id=(SELECT cid FROM ctx)':sales?` WHERE quote_id IN (SELECT id FROM quotes WHERE lead_id IN (${leadSet}))`:'';
+  const salesQuoteScope=`lead_id IN (${leadSet}) AND customer_id IN (${customerScope})`;
+  const bookingWhere=customer?' WHERE customer_id=(SELECT cid FROM ctx)':sales?` WHERE customer_id IN (${customerScope}) AND quote_id IN (SELECT id FROM quotes WHERE ${salesQuoteScope})`:'';
   const bookingSet=`SELECT id FROM bookings${bookingWhere}`;
   const customerWhere=customer?' WHERE id=(SELECT cid FROM ctx)':sales
     ?` WHERE id IN (${customerScope})`
@@ -25,7 +26,7 @@ export async function dataset(user:User) {
     :finance?" WHERE kind IN ('Invoice','Payment receipt')":'';
   const bookingChild=` WHERE booking_id IN (${bookingSet})`;
   const taskFilter=sales?` WHERE lead_id IN (${leadSet})`:ops?' WHERE booking_id IS NOT NULL':'';
-  const quoteIds=sales?` WHERE quote_id IN (SELECT id FROM quotes WHERE lead_id IN (${leadSet}))`:'';
+  const quoteIds=sales?` WHERE quote_id IN (SELECT id FROM quotes WHERE ${salesQuoteScope})`:'';
   const select=(table:string,clause='',sort='')=>`SELECT * FROM ${table}${clause} ${sort}`;
   const sql={
     customers:['admin','manager'].includes(user.role)
@@ -37,7 +38,7 @@ export async function dataset(user:User) {
     package_suppliers:!customer&&!finance&&!sales&&select('package_suppliers'),
     quotes:!ops&&select('quotes',customer
       ?" WHERE customer_id=(SELECT cid FROM ctx) AND status IN ('Sent','Viewed','Accepted','Rejected','Expired')"
-      :sales?` WHERE lead_id IN (${leadSet})`:'','ORDER BY created DESC,rowid DESC'),
+      :sales?` WHERE ${salesQuoteScope}`:'','ORDER BY created DESC,rowid DESC'),
     revisions:!customer&&!ops&&!finance&&select('quote_revisions',quoteIds,'ORDER BY version DESC'),
     conversations:(staffRetail||customer)&&select('conversations',conversationWhere,'ORDER BY created DESC,rowid DESC'),
     messages:(staffRetail||customer)&&`SELECT * FROM messages WHERE conversation_id IN (${conversationSet})
@@ -61,11 +62,11 @@ export async function dataset(user:User) {
     booking_travellers:!finance&&!sales&&select('booking_travellers',bookingChild),
     feedback:select('feedback',bookingChild,'ORDER BY rowid DESC'),
     events:!customer&&select('events',sales?` WHERE lead_id IN (${leadSet}) OR conversation_id IN (${conversationSet}) OR booking_id IN (${bookingSet})`
-      :ops||finance?' WHERE booking_id IS NOT NULL':'','ORDER BY rowid DESC'),
-    team:!customer&&(user.role==='admin'?"SELECT id,name,role,active,email FROM users WHERE role<>'customer' ORDER BY name"
+      :ops||finance?' WHERE booking_id IS NOT NULL':user.sign_in==='quick'?" WHERE kind<>'Staff account saved'":'','ORDER BY rowid DESC'),
+    team:!customer&&(canManageStaff(user)?"SELECT id,name,role,active,email FROM users WHERE role<>'customer' ORDER BY name"
       :"SELECT id,name,role,active FROM users WHERE role<>'customer' ORDER BY name"),
     notifications:select('notifications',' WHERE user_id=(SELECT uid FROM ctx)','ORDER BY rowid DESC LIMIT 80'),
-    workflows:user.role==='admin'&&select('workflows','','ORDER BY label'),
+    workflows:canManageStaff(user)&&select('workflows','','ORDER BY label'),
   };
   const entries=Object.entries(sql) as [keyof typeof sql,string|false][];
   const selected=entries.filter((entry):entry is [keyof typeof sql,string]=>entry[1]!==false);

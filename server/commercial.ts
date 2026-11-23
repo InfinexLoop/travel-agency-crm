@@ -3,21 +3,27 @@ import { addDays, balance, bookingStatuses, confirmed, type User } from '../doma
 import { allow, check, sameCustomer } from './auth.ts';
 import { day, id, insert, one, rows, run, update } from './db.ts';
 import { assignee, closeTasks, message, notify, record, task, template } from './events.ts';
-import { find, leadStage, salesLead } from './crm.ts';
+import { find, leadStage, requireCustomerScope, salesLead } from './crm.ts';
 import { amount, count, date, days, key, notes, optionalKey, str, text, validateTravel } from './input.ts';
 
 export async function quoteAccess(user:User,id:string) {
   allow(user,'manager','sales','customer','finance');
   const q=await find('quotes',id);
   sameCustomer(user,q.customer_id);
-  if (user.role==='sales') await salesLead(user,q.lead_id);
+  if (user.role==='sales') {
+    await requireCustomerScope(user,q.customer_id,'Quotation not found');
+    await salesLead(user,q.lead_id);
+  }
   check(user.role!=='customer'||['Sent','Viewed','Accepted','Rejected','Expired'].includes(q.status),'Quotation not found',404);
   return q;
 }
 export async function bookingAccess(user:User,id:string) {
   const b=await find('bookings',id);
   sameCustomer(user,b.customer_id);
-  if (user.role==='sales') await salesLead(user,(await find('quotes',b.quote_id)).lead_id);
+  if (user.role==='sales') {
+    await requireCustomerScope(user,b.customer_id,'Booking not found');
+    await quoteAccess(user,b.quote_id);
+  }
   return b;
 }
 export async function bookingPaid(id:string) {

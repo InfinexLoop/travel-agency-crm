@@ -1,7 +1,9 @@
+import { randomBytes } from 'node:crypto';
 import { existsSync, renameSync } from 'node:fs';
 import { dataDir, day, insert, migrate, one, transaction } from '../server/db.local.ts';
 import { passwordHash, seededDemoPassword } from '../server/password.ts';
 import { addDays, roles, sources } from '../domains/shared.ts';
+import { demoOwnerId } from '../domains/demo-personas.ts';
 
 const demo=process.env.CRM_DEMO!=='0';
 const action=process.argv[2];
@@ -87,6 +89,8 @@ transaction(()=>{
     ['USR-CUSTOMER3','Meera Iyer','customer3','customer',code('CUS',2)],
   ];
   for (const [id,name,email,role,customer_id] of users) insert('users',{id,name,email:email+'@zuri.demo',hash:demoHash,role,customer_id});
+  const previewHash=randomBytes(16).toString('hex')+':'+randomBytes(64).toString('hex');
+  insert('users',{id:demoOwnerId,name:'Demo Owner',email:'demo-owner@zuri.demo',hash:previewHash,role:'admin',customer_id:null});
   names.forEach((_,i)=>insert('customer_sales_assignments',{customer_id:code('CUS',i),salesperson_id:sales[i%2]}));
   for (const [id,label,template] of [
     ['acknowledgement','Website acknowledgement','Thanks, {name}. We received your travel brief and a specialist will be in touch.'],

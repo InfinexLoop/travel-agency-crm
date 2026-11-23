@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { allow, authenticate, check, demo, demoSignInPassword, digest, DomainError, getUser, session } from '../../../../server/auth.ts';
+import { allow, authenticate, check, demo, demoAccount, demoQuickLoginEnabled, digest, DomainError, getUser, isDemoSignIn, localDemoPasswordEnabled, portalLinkDigest, publicDemoSignInEnabled, session, sessionDigest } from '../../../../server/auth.ts';
 import { seededDemoPassword } from '../../../../server/password.ts';
 import { day, insert, now, one, run, transaction, ConcurrentWrite } from '../../../../server/db.ts';
 import { crmActions } from '../../../../server/crm.ts';
@@ -10,7 +10,7 @@ import { authorizePortalLink, operationsActions, upload } from '../../../../serv
 import { dataset } from '../../../../server/queries.ts';
 import { file } from '../../../../server/files.ts';
 import { report } from '../../../../domains/reporting.ts';
-import { balance, bookingStatuses, sources, stages, type User } from '../../../../domains/shared.ts';
+import { balance, bookingStatuses, canManageStaff, sources, stages, type User } from '../../../../domains/shared.ts';
 
 export const runtime='nodejs';
 export const dynamic='force-dynamic';
@@ -76,6 +76,14 @@ export async function POST(r:NextRequest,ctx:Context) {
     check(origin===`${r.nextUrl.protocol}//${host}`,'Request origin is not allowed',403);
     const length=Number(r.headers.get('content-length')||0);
     check(length <= (path==='upload'?5.2*1024*1024:150_000),'Request is too large',413);
+    if (path==='demo-login') {
+      const {persona}=z.strictObject({persona:z.string().max(20)}).parse(await r.json());
+      const {user,raw}=await transaction(async ()=>{
+        const user=await demoAccount(persona,sessionName(r)==='zuri_portal');
+        return {user,raw:session(user,'quick')};
+      });
+      return setCookie(json({user}),r,sessionName(r),raw);
+    }
     if (path==='login') {
       const input=z.object({email:z.email().max(180),password:z.string().min(1).max(200)}).parse(await r.json());
       const k=input.email.toLowerCase();
@@ -88,7 +96,7 @@ export async function POST(r:NextRequest,ctx:Context) {
       try {
         ({user,raw}=await transaction(async ()=>{
           const user=await authenticate(input.email,input.password);
-          check(input.password!==seededDemoPassword||demoSignInPassword(),'Invalid email or password',401);
+          check(input.password!==seededDemoPassword||localDemoPasswordEnabled(),'Invalid email or password',401);
           return {user,raw:session(user)};
         }));
       }
@@ -103,26 +111,31 @@ export async function POST(r:NextRequest,ctx:Context) {
       check(demo,'Demo portal links are disabled',403);
       const {token}=z.object({token:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).parse(await r.json());
       const raw=await transaction(async ()=>{
-        const hashed=digest(token);
-        const account=await one<User>(`SELECT u.id,u.name,u.email,u.role,u.customer_id FROM portal_links p JOIN users u ON u.id=p.user_id
-          WHERE p.token=? AND p.expires>? AND u.active=1 AND u.role='customer'`,hashed,now());
+        const quickLink=portalLinkDigest(token,true);
+        const account=await one<User & {link_token:string}>(`SELECT u.id,u.name,u.email,u.role,u.customer_id,p.token AS link_token
+          FROM portal_links p JOIN users u ON u.id=p.user_id WHERE p.token IN (?,?)
+          AND p.expires>? AND u.active=1 AND u.role='customer'`,portalLinkDigest(token),quickLink,now());
         check(account,'This portal link is expired or has already been used',401);
-        run('DELETE FROM portal_links WHERE token=?',hashed);
-        return {user:account,session:session(account)};
+        const {link_token,...user}=account;
+        check(link_token!==quickLink||demoQuickLoginEnabled(),'This demo portal link is unavailable',403);
+        run('DELETE FROM portal_links WHERE token=?',link_token);
+        return {user,session:session(user,link_token===quickLink?'demo-portal-link':'portal-link')};
       });
       return setCookie(json({user:raw.user}),r,'zuri_portal',raw.session);
     }
     if (path==='logout') {
       await transaction(async ()=>{
-        await requireUser(r);
-        run('DELETE FROM sessions WHERE token=?',digest(rawSession(r)!));
+        const user=await requireUser(r);
+        run('DELETE FROM sessions WHERE token=?',sessionDigest(rawSession(r)!,user.sign_in));
       });
       const response=json({ok:true});
       response.cookies.delete(sessionName(r));
       return response;
     }
     if (path==='upload') {
-      await requireUser(r);
+      const user=await requireUser(r);
+      check(!publicDemoSignInEnabled()||!isDemoSignIn(user.sign_in),
+        'Sign in with a password or private invitation to upload files to the shared demo',403);
       return json(await upload(()=>requireUser(r),await r.formData()));
     }
     check(path==='action'||path==='ingest','Page not found',404);
@@ -135,6 +148,9 @@ export async function POST(r:NextRequest,ctx:Context) {
     const fingerprint=digest(JSON.stringify(input??null));
     return json(await transaction(async ()=>{
       const user=await requireUser(r);
+      if (action==='staff.save'||action==='workflow.save') {
+        check(canManageStaff(user),'This action requires a private administrator sign-in',403);
+      }
       const existing=await one('SELECT * FROM requests WHERE key=? AND user_id=? AND action=?',requestKey,user.id,action);
       if (existing) {
         check(existing.fingerprint===fingerprint,'This request ID was already used with different data',409);

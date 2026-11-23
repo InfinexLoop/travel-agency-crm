@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { deleteObject, putFile } from './platform.ts';
 import { confirmed, docKinds, visaStatuses, roles, type User } from '../domains/shared.ts';
-import { allow, check, demo, digest, DomainError, passwordHash, sameCustomer, token } from './auth.ts';
+import { allow, check, demo, DomainError, passwordHash, portalLinkDigest, sameCustomer, token } from './auth.ts';
 import { id, insert, one, rows, run, update, day, transaction, ConcurrentWrite } from './db.ts';
 import { assignee, record, task } from './events.ts';
 import { find, requireCustomerScope, salesLead } from './crm.ts';
@@ -190,7 +190,7 @@ export async function operationsActions(action:string,input:unknown,user:User) {
       check(account.active,'Portal access has been disabled');
       const raw=token();
       const expires=new Date(Date.now()+10*60_000).toISOString().slice(0,19).replace('T',' ');
-      insert('portal_links',{token:digest(raw),user_id:account.id,expires});
+      insert('portal_links',{token:portalLinkDigest(raw,user.sign_in==='quick'),user_id:account.id,expires});
       await record('Demo portal link issued',`One-time link issued for ${customer.id}`,{},user);
       return {token:raw};
     }
