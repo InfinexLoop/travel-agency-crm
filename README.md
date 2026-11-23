@@ -27,7 +27,7 @@ To reset the presentation, stop the server and run `npm run db:reset -- --confir
 
 ## Demo accounts
 
-The sign-in page has one-click choices for the accounts below. The common local-demo password is `ZuriDemo!2026`.
+The disposable local demo has one-click choices for the accounts below. The common local-demo password is `ZuriDemo!2026`. The hosted Worker requires separately provisioned CRM credentials.
 
 | Role | Email |
 | --- | --- |
@@ -116,9 +116,9 @@ npm run test:e2e
 npm run test:e2e:worker
 ```
 
-The two journey commands explicitly select disposable SQLite or isolated workerd with local D1 and R2. Both start a fresh loopback server and reject hosted URLs, credentials, and an existing listener. The Worker suite enables the loopback-only test setting for its build. A regular build and deployment use the Cloudflare Access gate.
+The two journey commands explicitly select disposable SQLite or isolated workerd with local D1 and R2. Both start a fresh loopback server and reject hosted URLs, credentials, and an existing listener. The Worker suite enables the local test binding for its disposable build.
 
-Run `npm run test:smoke:hosted` for GET-only checks against the fixed demo Worker. The default checks anonymous Access protection. With an approved service identity already available, provide `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` through the environment to check the protected pages. Optionally supply an existing `CRM_SMOKE_STAFF_SESSION` to check read-only CRM data. These credentials are used in memory for allowlisted GET requests without following redirects. For interactive acceptance, sign in as an approved viewer.
+Run `npm run test:smoke:hosted` for GET-only checks against the fixed demo Worker. It checks the public CRM login screens and verifies that CRM data, exports and documents require an application session. Optionally supply an existing `CRM_SMOKE_STAFF_SESSION` through the environment to check CRM data with an authorized session. The session is sent only in a read-only request to the fixed data endpoint with redirects disabled.
 
 ### Initialize the hosted data
 
@@ -131,8 +131,8 @@ npm run db:seed:cloudflare -- .cloudflare/synthetic-seed.json
 npx cf d1 query a3f9036d-3506-4dde-bd60-3a5bf6036a18 --batch @.cloudflare/synthetic-seed.json
 ```
 
-The seed is a guarded batch that skips a previously seeded database and rejects an unseeded database containing customer or user records. Set `CRM_SEED_DATE=YYYY-MM-DD` to reproduce the calendar dates of the seed. The Worker never seeds or resets itself. The reset command is for local SQLite only.
+The seed is a guarded batch that skips a previously seeded database and rejects an unseeded database containing customer or user records. Set `CRM_SEED_DATE=YYYY-MM-DD` to reproduce the calendar dates of the seed. The Worker never seeds or resets itself. The reset command is for local SQLite only. Before exposing a newly seeded Worker, set separate passwords for its accounts using the application's password hashing and revoke existing sessions for rotated accounts.
 
-### Deploy behind Cloudflare Access
+### Deploy the public demo
 
-Use `npm run deploy:vinext` with `CRM_LOCAL_TEST` unset. The Worker verifies the Cloudflare Access token signature, issuer, audience, and expiry before it handles requests. If the Access application is replaced, update the public issuer and audience in `cloudflare/resources.ts`. Configure a Worker-scoped Access application covering all traffic with an allow policy for approved demo viewers. Preview URLs are disabled. Verify anonymous requests are denied and then use an approved identity for the hosted walkthrough. Demo sign-in credentials control CRM roles inside Access.
+Use `npm run deploy:vinext` with `CRM_LOCAL_TEST` unset. Keep preview URLs disabled and the R2 bucket private. The public Worker serves the CRM sign-in screens directly. CRM sessions and roles control access to data and actions. If Cloudflare Access is configured, verify the deployed authentication and rotated accounts before disabling the rule for this Worker. Run the hosted smoke checks and use an approved CRM account for the walkthrough.

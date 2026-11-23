@@ -10,6 +10,7 @@ interface D1Session {
   batch<T>(statements: D1Statement[]): Promise<{ results: T[] }[]>;
 }
 interface Bindings {
+  CRM_LOCAL_TEST?: string;
   DB: { withSession(constraint: 'first-primary'): D1Session };
   FILES: {
     put(key: string, value: ArrayBuffer, options: { httpMetadata: { contentType: string } }): Promise<unknown>;
@@ -18,6 +19,8 @@ interface Bindings {
   };
 }
 const bound=()=>env as unknown as Bindings;
+
+export const localDemoSignInEnabled = () => bound().CRM_LOCAL_TEST==='1';
 
 export function database(): Database {
   const session=bound().DB.withSession('first-primary');
