@@ -1,6 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { one, run, insert, now } from './db.ts';
-import { passwordHash } from './password.ts';
+import { passwordHash, seededDemoPassword } from './password.ts';
+import { localDemoSignInEnabled } from './platform.ts';
 export { passwordHash } from './password.ts';
 import type { Role, User } from '../domains/shared.ts';
 
@@ -12,6 +13,9 @@ export function check(condition: unknown, message: string, status=400): asserts 
   if (!condition) throw new DomainError(message, status);
 }
 export const demo = process.env.CRM_DEMO !== '0';
+export function demoSignInPassword() {
+  return demo&&localDemoSignInEnabled()?seededDemoPassword:undefined;
+}
 export const token = () => randomBytes(32).toString('base64url');
 export const digest = (raw:string) => createHash('sha256').update(raw).digest('hex');
 const profile = 'u.id,u.name,u.email,u.role,u.customer_id';

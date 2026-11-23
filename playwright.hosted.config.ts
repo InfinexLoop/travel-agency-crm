@@ -9,5 +9,8 @@ export default defineConfig({
   workers:1,
   outputDir:'test-results/hosted',
   reporter:'list',
-  use:{trace:'off',screenshot:'off',video:'off'},
+  use:{
+    trace:'off',screenshot:'off',video:'off',
+    launchOptions:process.env.PLAYWRIGHT_EXECUTABLE?{executablePath:process.env.PLAYWRIGHT_EXECUTABLE}:{},
+  },
 });

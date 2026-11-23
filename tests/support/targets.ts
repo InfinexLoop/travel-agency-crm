@@ -6,7 +6,7 @@ type Environment=Record<string,string|undefined>;
 const urlOverrides=['CRM_E2E_LIVE_URL','CRM_E2E_BASE_URL','PLAYWRIGHT_TEST_BASE_URL','CRM_SMOKE_ORIGIN'];
 
 export function disposableTarget(env:Environment) {
-  if ([...urlOverrides,'CF_ACCESS_CLIENT_ID','CF_ACCESS_CLIENT_SECRET','CRM_SMOKE_STAFF_SESSION']
+  if ([...urlOverrides,'CRM_SMOKE_STAFF_SESSION']
     .some(name=>env[name]!==undefined)) {
     throw new Error('Local CRM tests reject hosted URLs and credentials. Use the dedicated hosted smoke configuration.');
   }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { allow, authenticate, check, demo, digest, DomainError, getUser, session } from '../../../../server/auth.ts';
+import { allow, authenticate, check, demo, demoSignInPassword, digest, DomainError, getUser, session } from '../../../../server/auth.ts';
+import { seededDemoPassword } from '../../../../server/password.ts';
 import { day, insert, now, one, run, transaction, ConcurrentWrite } from '../../../../server/db.ts';
 import { crmActions } from '../../../../server/crm.ts';
 import { commercialActions } from '../../../../server/commercial.ts';
@@ -87,7 +88,7 @@ export async function POST(r:NextRequest,ctx:Context) {
       try {
         ({user,raw}=await transaction(async ()=>{
           const user=await authenticate(input.email,input.password);
-          check(demo||input.password!=='ZuriDemo!2026','Seeded demo credentials are disabled',403);
+          check(input.password!==seededDemoPassword||demoSignInPassword(),'Invalid email or password',401);
           return {user,raw:session(user)};
         }));
       }

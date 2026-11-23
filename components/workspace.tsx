@@ -36,7 +36,6 @@ const portalMenu=[
   {id:'inbox',title:'Messages & assistance',icon:MessageSquareText},
 ];
 const emailSuffix='@zuri.demo';
-const demoPassword='ZuriDemo!2026';
 async function api<T=Row>(path:string,portal:boolean,init?:RequestInit) {
   const response=await fetch('/api/crm/'+path,{cache:'no-store',...init,headers:{'X-CRM-Space':portal?'portal':'staff',...init?.headers}});
   const body=await response.json() as T & {error?:string};
@@ -48,7 +47,7 @@ const post=(body:unknown):RequestInit=>({method:'POST',headers:{'Content-Type':'
 function Brand({portal=false}:{portal?:boolean}) {
   return <Link className="brand" href={portal?'/portal':'/'}><span className="brand-mark"><Plane size={22}/></span><span><strong>Zuri Holidays</strong><small>{portal?'Customer travel portal':'Travel Business Management'}</small></span></Link>;
 }
-function Login({portal,onLogin,initialError,demo}:{portal:boolean;onLogin:()=>void;initialError:string;demo:boolean}) {
+function Login({portal,onLogin,initialError,demo,demoPassword}:{portal:boolean;onLogin:()=>void;initialError:string;demo:boolean;demoPassword?:string}) {
   const router=useRouter();
   const [email,setEmail]=useState('');
   const [password,setPassword]=useState('');
@@ -74,14 +73,14 @@ function Login({portal,onLogin,initialError,demo}:{portal:boolean;onLogin:()=>vo
         <label className="field"><span>Password</span><input required type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)}/></label>
         {error&&<p className="error" role="alert">{error}</p>}<Button type="submit" disabled={Boolean(busy)}>{busy==='form'?'Signing in…':'Sign in'}</Button>
       </form>
-      {demo&&<><div className="login-divider"><span>Demo accounts</span></div>
+      {demoPassword&&<><div className="login-divider"><span>Demo accounts</span></div>
       <div className="demo-accounts">{(portal?[['customer','Ananya Rao'],['customer2','Rohan Mehta'],['customer3','Meera Iyer']]:
         [['owner','Owner / Admin'],['manager','Sales Manager'],['sales','Sales Executive'],['sales2','Sales Executive · Ravi'],['operations','Operations Executive'],['finance','Finance Executive']]).map(([account,label])=>
         <Button className="outline" key={account} disabled={Boolean(busy)} onClick={()=>void login(account+emailSuffix,demoPassword,account)}>{busy===account?'Signing in…':label}</Button>)}</div></>}
       <Link className="text-link login-switch" href={portal?'/':'/portal'}>{portal?'Open staff workspace':'Open customer portal'}</Link>
     </div></section></main>;
 }
-export function Workspace({demo}:{demo:boolean}) {
+export function Workspace({demo,demoPassword}:{demo:boolean;demoPassword?:string}) {
   const pathname=usePathname();
   const router=useRouter();
   const [first,...parts]=pathname.split('/').filter(Boolean);
@@ -159,7 +158,7 @@ export function Workspace({demo}:{demo:boolean}) {
     document.documentElement.dataset.theme=next?'dark':'light';
   };
   if (loading) return <div className="app-loading"><Compass className="spin" size={26}/> Loading workspace…</div>;
-  if (!data||portal!==(data.user.role==='customer')) return <Login key={String(portal)} portal={portal} onLogin={refresh} initialError={fatal} demo={demo}/>;
+  if (!data||portal!==(data.user.role==='customer')) return <Login key={String(portal)} portal={portal} onLogin={refresh} initialError={fatal} demo={demo} demoPassword={demoPassword}/>;
   const items=portal?portalMenu.map(x=>({...x,group:'Your trips'})):menu.filter(item=>data.user.role==='admin'||item.roles.includes(data.user.role));
   const current=items.find(item=>item.id===section);
   const prefix=portal?'/portal':'';

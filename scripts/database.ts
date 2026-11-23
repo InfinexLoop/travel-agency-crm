@@ -1,6 +1,6 @@
 import { existsSync, renameSync } from 'node:fs';
 import { dataDir, day, insert, migrate, one, transaction } from '../server/db.local.ts';
-import { passwordHash } from '../server/password.ts';
+import { passwordHash, seededDemoPassword } from '../server/password.ts';
 import { addDays, roles, sources } from '../domains/shared.ts';
 
 const demo=process.env.CRM_DEMO!=='0';
@@ -74,7 +74,7 @@ transaction(()=>{
   names.forEach((name,i)=>insert('customers',{id:code('CUS',i),name,phone:'+9190000'+String(1001+i).padStart(5,'0'),
     email:i===0?'ananya@example.test':name.toLowerCase().replace(' ','.')+'@example.test',instagram:i%5===0?name.toLowerCase().replace(' ','.'):null,
     preferences:['Vegetarian meals and private transfers','Family-friendly accommodation','Flexible travel dates','Boutique stays and guided day tours'][i%4],created:time(-190+i*3)}));
-  const demoHash=passwordHash('ZuriDemo!2026');
+  const demoHash=passwordHash(seededDemoPassword);
   const users=[
     ['USR-ADMIN','Maya Srinivasan','owner','admin',null],
     ['USR-MANAGER','Vikram Kapoor','manager','manager',null],

@@ -16,6 +16,8 @@ export function database(): Database {
   };
 }
 
+export const localDemoSignInEnabled = () => true;
+
 export const putFile = (key: string, bytes: ArrayBuffer, _mime: string) =>
   writeFile(resolve(uploadsDir,key),new Uint8Array(bytes),{mode:0o600,flag:'wx'});
 export const readObject = (key: string) =>
