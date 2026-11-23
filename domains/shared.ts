@@ -3,7 +3,9 @@ export const roles = {
   ops:'Operations Executive', finance:'Finance Executive', customer:'Customer',
 } as const;
 export type Role = keyof typeof roles;
-export type User = {id:string; name:string; email:string; role:Role; customer_id:string|null};
+export type SignIn = 'password'|'quick'|'portal-link'|'demo-portal-link';
+export type User = {id:string; name:string; email:string; role:Role; customer_id:string|null; sign_in?:SignIn};
+export const canManageStaff = (user:User) => user.role==='admin'&&(!user.sign_in||user.sign_in==='password');
 export const sources = ['Website','WhatsApp','Instagram','Phone Call','Walk-in','Referral','Other'] as const;
 export const stages = ['New','In Conversation','Qualified','Quotation Prepared','Quotation Sent','Negotiation','Won','Lost','Unresponsive','Closed'] as const;
 export const quoteStatuses = ['Draft','Internal Review','Approved','Sent','Viewed','Accepted','Rejected','Expired'] as const;

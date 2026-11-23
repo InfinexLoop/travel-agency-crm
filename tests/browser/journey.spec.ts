@@ -4,8 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { money } from '../../domains/shared';
 import { report as summarize } from '../../domains/reporting';
+import { demoPersonas } from '../../domains/demo-personas';
 
 import { disposableOrigin as base } from '../support/targets';
+import { verifyQuickLogin } from '../support/quick-login';
 
 const disposableConfig=fileURLToPath(new URL('../../playwright.config.ts',import.meta.url));
 test.beforeEach(({baseURL},info)=>{
@@ -34,6 +36,40 @@ async function chat(page:Page,words:string[]) {
     await expect(page.getByRole('textbox',{name:'Message',exact:true})).toHaveValue('');
   }
 }
+
+test('all nine quick logins use scoped sessions in the right workspace',async ({browser})=>{
+  for (const persona of Object.values(demoPersonas)) {
+    const context=await browser.newContext();
+    try {await verifyQuickLogin(await context.newPage(),base,persona);}
+    finally {await context.close();}
+  }
+});
+
+test('quick login accepts only its prescribed personas and preserves private account administration',async ({page,context})=>{
+  const quick=(data:unknown,headers:Record<string,string>=origin)=>context.request.post('/api/crm/demo-login',{data,headers,maxRedirects:0});
+  for (const input of [{persona:'USR-ADMIN'},{persona:'toString'},{persona:'owner',role:'admin'},{persona:'customer'}]) {
+    expect((await quick(input)).status()).toBe(400);
+  }
+  expect((await quick({persona:'owner'},{Origin:'http://example.test'})).status()).toBe(403);
+  expect((await quick({persona:'owner'},{...origin,...portalHeaders})).status()).toBe(400);
+  await signIn(page);
+  expect((await dataset(context)).user.id).toBe('USR-DEMO-OWNER');
+  for (const action of ['staff.save','workflow.save']) {
+    const response=await context.request.post('/api/crm/action',{
+      data:{action,input:{}},headers:{...origin,'Idempotency-Key':randomUUID()},maxRedirects:0,
+    });
+    expect(response.status()).toBe(403);
+  }
+  await page.goto('/team');
+  await expect(page.getByText('This page is unavailable',{exact:true})).toBeVisible();
+  await ok(context,'logout',{});
+  await page.goto('/');
+  await page.getByLabel('Email address').fill(staff.email);
+  await page.getByLabel('Password',{exact:true}).fill(staff.password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('link',{name:'Staff & settings'})).toBeVisible();
+  expect((await dataset(context)).user).toMatchObject({id:'USR-ADMIN',role:'admin',sign_in:'password'});
+});
 const action=(context:BrowserContext,action:string,input:unknown,portal=false)=>ok(context,'action',{action,input},randomUUID(),portal);
 
 test('WhatsApp enquiry becomes a completed trip with linked payments, documents and feedback',async ({page,context})=>{
